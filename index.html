@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='15' fill='%2300bcd4'/><text x='50' y='68' font-size='50' text-anchor='middle' fill='white' font-family='sans-serif' font-weight='bold'>CCO</text></svg>" />
+    <title>Painel CCO - Operação</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="splash">
+      <div class="splash-bg"></div>
+      <div class="splash-content">
+        <img src="/logo.png" alt="VIA" class="splash-logo" />
+        <div class="splash-dots">
+          <span></span><span></span><span></span>
+        </div>
+      </div>
+    </div>
+    <style>
+      #splash {
+        position: fixed; inset: 0; z-index: 99999;
+        display: flex; align-items: center; justify-content: center;
+        background: #05080f;
+        transition: opacity 0.8s ease-out, visibility 0.8s;
+      }
+      #splash.hide {
+        opacity: 0; visibility: hidden;
+      }
+      #splash .splash-bg {
+        position: absolute; inset: 0;
+        background: radial-gradient(ellipse at 50% 50%, rgba(0,212,255,0.08) 0%, transparent 70%);
+      }
+      #splash .splash-content {
+        position: relative; z-index: 1;
+        display: flex; flex-direction: column; align-items: center; gap: 32px;
+      }
+      #splash .splash-logo {
+        width: 220px; height: auto;
+        animation: splashFloat 3s ease-in-out infinite;
+        filter: drop-shadow(0 0 40px rgba(0,212,255,0.25));
+      }
+      @keyframes splashFloat {
+        0%, 100% { transform: translateY(0px); }
+        50% { transform: translateY(-18px); }
+      }
+      #splash .splash-dots {
+        display: flex; gap: 10px;
+      }
+      #splash .splash-dots span {
+        width: 8px; height: 8px; border-radius: 50%;
+        background: rgba(0,212,255,0.4);
+        animation: splashPulse 1.4s ease-in-out infinite;
+      }
+      #splash .splash-dots span:nth-child(2) { animation-delay: 0.2s; }
+      #splash .splash-dots span:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes splashPulse {
+        0%, 80%, 100% { transform: scale(0.6); opacity: 0.3; background: rgba(0,212,255,0.3); }
+        40% { transform: scale(1.2); opacity: 1; background: rgba(0,212,255,0.9); }
+      }
+    </style>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
