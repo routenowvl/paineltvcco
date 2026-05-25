@@ -713,7 +713,7 @@ body {
    ================================================================ */
 .dash-pill {
     position: fixed;
-    bottom: 16px;
+    bottom: 40px;
     left: 20px;
     z-index: 100;
     display: flex;

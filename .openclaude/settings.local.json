@@ -21,7 +21,8 @@
       "Bash(node -e \":*)",
       "Bash(node:*)",
       "Bash(xxd -l 30 \"C:/Projetos/painelcco/public/logo-via-branca.png\")",
-      "Bash(npm ls:*)"
+      "Bash(npm ls:*)",
+      "Bash(xargs grep:*)"
     ]
   }
 }
