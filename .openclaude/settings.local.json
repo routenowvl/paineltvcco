@@ -15,7 +15,13 @@
       "Bash(find:*)",
       "Bash(find C:/Projetos/painelcco -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\) ! -path */node_modules/* ! -path */.git/* ! -path */dist/* -exec grep -in \"sla\\\\|otd\\\\|SLA\\\\|gauge\\\\|percent\\\\|calcul\" {} +)",
       "Bash(find C:/Projetos/painelcco -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\) ! -path */node_modules/* ! -path */.git/* ! -path */dist/* -exec grep -in \"coleta\\\\|Coleta\\\\|COLETA\\\\|OTD\\\\|otd\\\\|nao.coleta\\\\|nao-coleta\" {} +)",
-      "Bash(ls src/types*)"
+      "Bash(ls src/types*)",
+      "Bash(identify \"C:/Projetos/painelcco/public/logo-via-branca.png\")",
+      "Bash(python3 -c \":*)",
+      "Bash(node -e \":*)",
+      "Bash(node:*)",
+      "Bash(xxd -l 30 \"C:/Projetos/painelcco/public/logo-via-branca.png\")",
+      "Bash(npm ls:*)"
     ]
   }
 }
