@@ -416,7 +416,7 @@ export function Dashboard(): JSX.Element {
         for (const p of produtoresSemColeta) {
             if (opsSet && !opsSet.has(normalizeOperation(p.operacao))) continue;
             let dias = 999;
-            const dt = parseDateFlexible(p.ultima_coleta);
+            const dt = parseDateFlexible(p.ultima_coleta || '');
             if (dt) {
                 const dtDate = new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
                 dias = Math.floor((hoje.getTime() - dtDate.getTime()) / (1000 * 60 * 60 * 24));
