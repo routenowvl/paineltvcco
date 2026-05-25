@@ -68,6 +68,49 @@ const todayISO = () => {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+/* ── count-up animation hook ──────────────────────────────────── */
+const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+
+function useCountUp(target: number, duration = 800): number {
+    const [display, setDisplay] = useState(target);
+    const fromRef = useRef(target);
+    const rafRef = useRef(0);
+    const startRef = useRef(0);
+
+    useEffect(() => {
+        const from = fromRef.current;
+        fromRef.current = target;
+        startRef.current = performance.now();
+
+        const tick = (now: number) => {
+            const elapsed = now - startRef.current;
+            const progress = Math.min(elapsed / duration, 1);
+            const eased = easeOutCubic(progress);
+            const current = from + (target - from) * eased;
+            setDisplay(current);
+            if (progress < 1) {
+                rafRef.current = requestAnimationFrame(tick);
+            }
+        };
+
+        if (from === target) {
+            setDisplay(target);
+            return;
+        }
+
+        rafRef.current = requestAnimationFrame(tick);
+        return () => cancelAnimationFrame(rafRef.current);
+    }, [target, duration]);
+
+    return display;
+}
+
+/* ── animated number display ──────────────────────────────────── */
+const AnimatedNumber = ({ value, decimals = 0, suffix = '' }: { value: number; decimals?: number; suffix?: string }) => {
+    const animated = useCountUp(value, 800);
+    return <>{animated.toFixed(decimals)}{suffix}</>;
+};
+
 /* ── URL-based filter mode ────────────────────────────────────── */
 const getFilterModeFromURL = (): 'operacao' | 'celula' => {
     const path = window.location.pathname.replace(/\/+$/, '');
@@ -678,9 +721,7 @@ export function Dashboard(): JSX.Element {
                                 <div className="dash-kpi-top">
                                     <div>
                                         <span className="dash-kpi-value">
-                                            {kpi.id === 'sla-saidas' || kpi.id === 'sla-ncol'
-                                                ? kpi.value.toFixed(2)
-                                                : Math.round(kpi.value)}
+                                            <AnimatedNumber value={kpi.value} decimals={kpi.kind === 'gauge' ? 2 : 0} />
                                             {kpi.kind === 'gauge' && <span className="dash-kpi-pct">%</span>}
                                         </span>
                                     </div>
@@ -711,7 +752,7 @@ export function Dashboard(): JSX.Element {
                     <div className={`dash-kpi-card ${rotasPendentesCount > 0 ? 'kpi-bad' : 'kpi-good'}`}>
                         <div className="dash-kpi-top">
                             <span className="dash-kpi-value">
-                                {rotasPendentesCount}
+                                <AnimatedNumber value={rotasPendentesCount} />
                             </span>
                         </div>
                         <span className="dash-kpi-label">Rotas Pendentes</span>
@@ -875,7 +916,7 @@ export function Dashboard(): JSX.Element {
                             </div>
                         )}
                         <div className="dash-center-stats">
-                            <span className="dash-stat-value">{qntRotasTotal}</span>
+                            <span className="dash-stat-value"><AnimatedNumber value={qntRotasTotal} /></span>
                             <div>
                                 <div className="dash-stat-label">Saídas Registradas</div>
                                 {filterMode === 'celula' && (
