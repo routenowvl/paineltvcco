@@ -22,7 +22,9 @@
       "Bash(node:*)",
       "Bash(xxd -l 30 \"C:/Projetos/painelcco/public/logo-via-branca.png\")",
       "Bash(npm ls:*)",
-      "Bash(xargs grep:*)"
+      "Bash(xargs grep:*)",
+      "Bash(grep -ri celula /c/Projetos/painelcco/src/ --include=*.ts --include=*.tsx --include=*.js --include=*.jsx --include=*.vue -l)",
+      "Bash(grep -ri celula /c/Projetos/painelcco/ --include=*.ts --include=*.tsx --include=*.js --include=*.jsx --include=*.vue -l)"
     ]
   }
 }

@@ -217,6 +217,7 @@ export function Dashboard(): JSX.Element {
         }
         return Array.from(emailMap.entries())
             .sort((a, b) => a[0].localeCompare(b[0]))
+            .filter((_, idx) => idx !== 3) // ignora Célula 4
             .map(([email, fils], idx) => ({
                 index: idx + 1,
                 label: `CÉLULA ${idx + 1}`,
