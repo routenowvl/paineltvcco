@@ -8,12 +8,14 @@ import {
     fetchMaintenances,
     fetchRotasPendentesCount,
     fetchProdutoresSemColeta,
+    fetchSaidasTrend,
     type PlantConfig,
     type SaidaRotaItem,
     type NaoColetaItem,
     type ColetaPrevistaItem,
     type MaintenanceItem,
-    type ProdutorSemColetaItem
+    type ProdutorSemColetaItem,
+    type TrendDay
 } from './services/routeWebService';
 import logoImg from './assets/logo.png';
 import './styles/global.css';
@@ -150,13 +152,12 @@ type RouteBarColor = 'gray' | 'blue' | 'yellow' | 'red';
 const getRouteBarColor = (s: SaidaRotaItem): RouteBarColor => {
     const st = (s.statusOp || '').toUpperCase().trim();
 
-    // 1) ATRASADA / ADIANTADA with all info filled → red
+    // 1) ATRASADA / ADIANTADA with motivo+obs filled → red
     if (st.includes('ATRAS') || st.includes('ADIANT')) {
         const hasMotivo = !!s.motivoAtraso && s.motivoAtraso.trim() !== '';
         const hasObs = !!s.observacao && s.observacao.trim() !== '';
-        const hasInicio = !!s.horarioInicio && s.horarioInicio.trim() !== '';
-        if (hasMotivo && hasObs && hasInicio) return 'red';
-        return 'yellow'; // missing info → pending verification
+        if (hasMotivo && hasObs) return 'red';
+        return 'yellow'; // missing motivo or obs → pending verification
     }
 
     // 2) NO PRAZO → blue (OK)
@@ -194,6 +195,7 @@ export function Dashboard(): JSX.Element {
     const [activeFilialIndex, setActiveFilialIndex] = useState(0);
     const [activeCelulaIndex, setActiveCelulaIndex] = useState(0);
     const [loading, setLoading] = useState(true);
+    const [trendLoaded, setTrendLoaded] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [nowHour, setNowHour] = useState(getNowHour);
     const [filterMode, setFilterMode] = useState<FilterMode>(getFilterModeFromURL);
@@ -201,8 +203,8 @@ export function Dashboard(): JSX.Element {
     const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
     const [rotasPendentesCount, setRotasPendentesCount] = useState(0);
     const [produtoresSemColeta, setProdutoresSemColeta] = useState<ProdutorSemColetaItem[]>([]);
+    const [saidasTrend, setSaidasTrend] = useState<TrendDay[]>([]);
 
-    const tableWrapRef = useRef<HTMLDivElement>(null);
     const chartAreaRef = useRef<HTMLDivElement>(null);
     const timelineRowsRef = useRef<HTMLDivElement>(null);
 
@@ -235,7 +237,7 @@ export function Dashboard(): JSX.Element {
     const loadData = useCallback(async () => {
         try {
             setError(null);
-            const [plantConfigs, saidas, naoColetas, previstas, maint] = await Promise.all([
+            const [plantConfigs, saidas, naoColetas, previstas, maint, produtores] = await Promise.all([
                 fetchPlantConfigs(),
                 fetchSaidasRotas(todayISO()),
                 fetchNaoColetasMotivos(todayISO()),
@@ -243,6 +245,10 @@ export function Dashboard(): JSX.Element {
                 fetchMaintenances(todayISO()).catch(err => {
                     console.warn('[DASHBOARD] Manutenções indisponíveis:', err?.message || err);
                     return [] as MaintenanceItem[];
+                }),
+                fetchProdutoresSemColeta().catch(err => {
+                    console.warn('[DASHBOARD] Produtores sem coleta indisponíveis:', err?.message || err);
+                    return [] as ProdutorSemColetaItem[];
                 }),
             ]);
             const fc: FilialConfig[] = plantConfigs.map((pc: PlantConfig) => ({
@@ -258,26 +264,13 @@ export function Dashboard(): JSX.Element {
             setNaoColetasData(naoColetas);
             setColetasPrevistas(previstas);
             setMaintenances(maint);
+            setProdutoresSemColeta(produtores);
             setActiveFilialIndex(prev => fc.length > 0 ? prev % fc.length : 0);
             setLastUpdate(new Date());
-
-
-            // Fetch produtores sem coleta
-            fetchProdutoresSemColeta().then(rows => {
-                setProdutoresSemColeta(rows);
-            }).catch(err => {
-                console.warn('[DASHBOARD] Produtores sem coleta indisponíveis:', err?.message || err);
-            });
-
-            // Fade out splash after first successful data load
-            const splash = document.getElementById('splash');
-            if (splash) {
-                splash.classList.add('hide');
-                setTimeout(() => splash.remove(), 1000);
-            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Não foi possível carregar os dados.');
             console.error('[DASHBOARD] Erro loadData:', err);
+            setTrendLoaded(true); // unblock splash on error
         } finally {
             setLoading(false);
         }
@@ -293,6 +286,16 @@ export function Dashboard(): JSX.Element {
         const id = window.setInterval(() => setNowHour(getNowHour()), 15_000);
         return () => window.clearInterval(id);
     }, []);
+
+    /* ── splash removal: only after all data + trend loaded ── */
+    useEffect(() => {
+        if (loading || !trendLoaded) return;
+        const splash = document.getElementById('splash');
+        if (splash) {
+            splash.classList.add('hide');
+            setTimeout(() => splash.remove(), 1000);
+        }
+    }, [loading, trendLoaded]);
 
     /* ── rotation + countdown ── */
     useEffect(() => {
@@ -326,6 +329,32 @@ export function Dashboard(): JSX.Element {
         }
         return () => { cancelled = true; };
     }, [activeFilial, activeCelula, filterMode, filiais]);
+
+    /* ── trend 7 dias: refetch when active filial/célula changes ── */
+    useEffect(() => {
+        let cancelled = false;
+        const operacoes = filterMode === 'celula' && activeCelula
+            ? activeCelula.filiais.map(f => f.operacao)
+            : activeFilial?.operacao
+                ? [activeFilial.operacao]
+                : [];
+
+        if (operacoes.length > 0) {
+            fetchSaidasTrend(operacoes).then(trend => {
+                if (!cancelled) {
+                    setSaidasTrend(trend);
+                    setTrendLoaded(true);
+                }
+            }).catch(err => {
+                console.warn('[DASHBOARD] Trend indisponível:', err?.message || err);
+                if (!cancelled) setTrendLoaded(true);
+            });
+        } else {
+            setSaidasTrend([]);
+            setTrendLoaded(true);
+        }
+        return () => { cancelled = true; };
+    }, [activeFilial, activeCelula, filterMode]);
 
     /* ── computed data ── */
     const saidasFilial = useMemo(() => {
@@ -498,19 +527,11 @@ export function Dashboard(): JSX.Element {
                 const missingObs = !s.observacao || s.observacao.trim() === '';
                 const noInicio = !s.horarioInicio || s.horarioInicio.trim() === '';
 
-                return missingMotivo || missingObs || noInicio;
+                return missingMotivo || missingObs;
             })
             .map(s => {
                 const missingMotivo = !s.motivoAtraso || s.motivoAtraso.trim() === '';
                 const missingObs = !s.observacao || s.observacao.trim() === '';
-                const noInicio = !s.horarioInicio || s.horarioInicio.trim() === '';
-
-                let severity: 'red' | 'yellow';
-                if (missingMotivo || missingObs) {
-                    severity = 'red';
-                } else {
-                    severity = 'yellow';
-                }
 
                 return {
                     id: s.id,
@@ -520,7 +541,7 @@ export function Dashboard(): JSX.Element {
                     motivoAtraso: s.motivoAtraso,
                     observacao: s.observacao,
                     horarioInicio: s.horarioInicio,
-                    severity,
+                    severity: 'red' as const,
                 };
             });
     }, [saidasFilial]);
@@ -651,27 +672,6 @@ export function Dashboard(): JSX.Element {
 
         return () => clearTimeout(t);
     }, [nowHour, timelineRoutes, activeFilialIndex, activeCelulaIndex]);
-
-    useEffect(() => {
-        const scroll = (el: HTMLDivElement | null): ReturnType<typeof setTimeout> | null => {
-            if (!el || el.scrollHeight <= el.clientHeight) return null;
-            const dist = el.scrollHeight - el.clientHeight;
-            const dur = Math.max(dist * 18, 3000);
-            const t0 = Date.now();
-            const s0 = el.scrollTop;
-            let frame: number;
-            const step = () => {
-                const p = Math.min((Date.now() - t0) / dur, 1);
-                const ease = p < 0.5 ? 2 * p * p : 1 - Math.pow(-2 * p + 2, 2) / 2;
-                el.scrollTop = s0 + (dist - s0) * ease;
-                if (p < 1) frame = requestAnimationFrame(step);
-                else setTimeout(() => el.scrollTo({ top: 0, behavior: 'smooth' }), 2000);
-            };
-            return setTimeout(() => { frame = requestAnimationFrame(step); }, 3000);
-        };
-        const timers = [scroll(tableWrapRef.current)];
-        return () => timers.forEach(t => { if (t) clearTimeout(t); });
-    }, [saidasFilial, activeFilialIndex, activeCelulaIndex, filterMode]);
 
     /* ── pill timer ── */
     const pillProgress = shouldRotate ? ((ROTATE_INTERVAL_MS / 1000 - timeLeft) / (ROTATE_INTERVAL_MS / 1000)) * 100 : 0;
@@ -896,93 +896,257 @@ export function Dashboard(): JSX.Element {
 
                 {/* CENTER — Tables stacked */}
                 <div className="dash-center-stack">
-                    <section className="dash-panel">
-                        <div className="dash-panel-head">
-                            <span className="dash-panel-title">Saídas de Rotas do Dia</span>
-                        </div>
+                    <section className="dash-panel dash-panel-trend">
                         {filterMode === 'celula' && proximaRota && (
-                            <div style={{
-                                display: 'flex', alignItems: 'center', gap: 12,
-                                padding: '8px 14px', margin: '0 0 4px',
-                                background: 'rgba(59,130,246,0.12)',
-                                borderRadius: 6, borderLeft: '3px solid var(--blue)',
-                            }}>
-                                <span style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 1 }}>Próx. rota</span>
-                                <span style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: 14 }}>{proximaRota.title}</span>
-                                <span style={{
-                                    fontWeight: 700, fontSize: 13, color: 'var(--blue)',
-                                }}>
-                                    Prevista em {proximaRota.label}
-                                </span>
+                            <div className="dash-next-route">
+                                <span className="dash-next-route-label">Próx. rota</span>
+                                <span className="dash-next-route-name">{proximaRota.title}</span>
+                                <span className="dash-next-route-time">Prevista em {proximaRota.label}</span>
                             </div>
                         )}
-                        <div className="dash-center-stats">
-                            <span className="dash-stat-value"><AnimatedNumber value={qntRotasTotal} /></span>
-                            <div>
-                                <div className="dash-stat-label">Saídas Registradas</div>
-                                {filterMode === 'celula' && (
-                                    <div className="dash-stat-sub">
-                                        {saidasCelula.filter(s => !(s.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/)).length} previstas · {saidasCelula.filter(s => (s.statusOp || '').toUpperCase().includes('ATRAS')).length} atrasadas
-                                    </div>
-                                )}
+
+                        {/* ── Header: Context info + badge ── */}
+                        <div className="dash-trend-header">
+                            <div className="dash-trend-kpi-group">
+                                <div className="dash-trend-kpi-info">
+                                    <span className="dash-trend-kpi-label">Evolução 7 Dias — Atendimento Saídas</span>
+                                    <span className="dash-trend-kpi-sub">
+                                        <span className="sub-num">{qntRotasTotal}</span> registradas
+                                        {filterMode === 'celula' && (
+                                            <>
+                                                <span className="sub-dot">·</span>
+                                                <span className="sub-num">{saidasCelula.filter(s => !(s.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/)).length}</span> previstas
+                                                <span className="sub-dot">·</span>
+                                                <span className="sub-alert">{saidasCelula.filter(s => (s.statusOp || '').toUpperCase().includes('ATRAS')).length}</span> atrasadas
+                                            </>
+                                        )}
+                                    </span>
+                                </div>
                             </div>
+                            {saidasTrend.length >= 2 && (() => {
+                                const yesterdayIdx = saidasTrend.length - 2;
+                                const todayIdx = saidasTrend.length - 1;
+                                const yVal = saidasTrend[yesterdayIdx]?.value;
+                                const tVal = saidasTrend[todayIdx]?.value;
+                                if (yVal == null || tVal == null) return null;
+                                const diff = tVal - yVal;
+                                const isUp = diff >= 0;
+                                return (
+                                    <div className={`dash-trend-badge ${isUp ? 'dash-trend-badge-up' : 'dash-trend-badge-down'}`}>
+                                        <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
+                                            <path d={isUp ? 'M5 2L8.5 7H1.5L5 2Z' : 'M5 8L1.5 3H8.5L5 8Z'} fill="currentColor"/>
+                                        </svg>
+                                        <span>{isUp ? '+' : ''}{diff.toFixed(1)}% vs ontem</span>
+                                    </div>
+                                );
+                            })()}
                         </div>
-                        <div className="dash-table-wrap" ref={tableWrapRef}>
-                            <table className="dash-table">
-                            <thead>
-                                <tr>
-                                    <th>Rota</th>
-                                    <th>Placa</th>
-                                    <th>Status</th>
-                                    <th>Hr. Saída</th>
-                                    <th>Hr. Início</th>
-                                    <th>Motivo Atraso</th>
-                                    <th>Observação</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {saidasCelula.length > 0 ? saidasCelula.map(s => {
-                                    const stUpper = (s.statusOp || '').toUpperCase();
-                                    const isAtrasada = stUpper.includes('ATRAS');
-                                    const isAdiantada = stUpper.includes('ADIANT');
-                                    const isPrevista = !isAtrasada && !isAdiantada && !stUpper.includes('NO PRAZO');
-                                    const sc = isAtrasada ? 'status-atrasado' : isAdiantada ? 'status-atrasado' : isPrevista ? 'status-andamento' : 'status-ok';
-                                    const nowMin = new Date().getHours() * 60 + new Date().getMinutes();
-                                    const saidaMin = parseClockToMinutes(s.horarioSaida);
-                                    const atrasoMin = isAtrasada && saidaMin !== null ? nowMin - saidaMin : null;
-                                    return (
-                                        <tr key={s.id} style={isPrevista && filterMode === 'celula' ? { background: 'rgba(59,130,246,0.06)' } : undefined}>
-                                            <td>{s.title}</td>
-                                            <td>{s.placa || '--'}</td>
-                                            <td className={`col-status ${sc}`}>
-                                                {s.statusOp || '--'}
-                                                {isPrevista && !s.horarioInicio && filterMode === 'celula' && saidaMin !== null && (
-                                                    <span style={{ fontSize: 10, color: 'var(--blue)', marginLeft: 6 }}>
-                                                        {saidaMin > nowMin ? `em ${formatTimeDelta(saidaMin - nowMin)}` : `venceu ${formatTimeDelta(nowMin - saidaMin)} atrás`}
+
+                        {/* ── Premium Chart ── */}
+                        {saidasTrend.length > 0 && (() => {
+                            const validDays = saidasTrend.filter(d => d.value !== null);
+                            if (validDays.length === 0) return null;
+                            const vals = validDays.map(d => d.value!);
+                            const dataMin = Math.min(...vals);
+                            const dataMax = Math.max(...vals);
+                            const dataRange = dataMax - dataMin || 1;
+                            const padding = Math.max(dataRange * 0.3, 3);
+                            const minV = Math.max(dataMin - padding, 0);
+                            const maxV = Math.min(dataMax + padding, 100);
+                            const range = maxV - minV || 1;
+
+                            const W = 100;
+                            const H = 50;
+                            const PAD_X = 4;
+                            const PAD_Y = 4;
+                            const todayStr = todayISO();
+
+                            const pts = saidasTrend.map((day, i) => {
+                                if (day.value === null) return null;
+                                const x = PAD_X + (i / Math.max(saidasTrend.length - 1, 1)) * (W - PAD_X * 2);
+                                const y = PAD_Y + (1 - (day.value - minV) / range) * (H - PAD_Y * 2);
+                                return { x, y, day, i };
+                            }).filter(Boolean) as { x: number; y: number; day: TrendDay; i: number }[];
+
+                            // Smooth cubic bezier through points (catmull-rom style)
+                            let smoothPath = '';
+                            if (pts.length >= 2) {
+                                smoothPath = `M${pts[0].x},${pts[0].y}`;
+                                for (let i = 1; i < pts.length; i++) {
+                                    const prev = pts[i - 1];
+                                    const curr = pts[i];
+                                    const cpx1 = prev.x + (curr.x - (pts[i - 2]?.x ?? prev.x)) / 6;
+                                    const cpy1 = prev.y + (curr.y - (pts[i - 2]?.y ?? prev.y)) / 6;
+                                    const cpx2 = curr.x - ((pts[i + 1]?.x ?? curr.x) - prev.x) / 6;
+                                    const cpy2 = curr.y - ((pts[i + 1]?.y ?? curr.y) - prev.y) / 6;
+                                    smoothPath += ` C${cpx1},${cpy1} ${cpx2},${cpy2} ${curr.x},${curr.y}`;
+                                }
+                            }
+
+                            // Gradient area — close to bottom
+                            const areaPath = pts.length >= 2
+                                ? `${smoothPath} L${pts[pts.length - 1].x},${H} L${pts[0].x},${H} Z`
+                                : '';
+
+                            // Meta line at 95%
+                            const meta95y = PAD_Y + (1 - (95 - minV) / range) * (H - PAD_Y * 2);
+                            const showMeta = meta95y >= PAD_Y && meta95y <= H - PAD_Y;
+
+                            const lastPt = pts[pts.length - 1];
+                            const lastVal = lastPt?.day.value ?? 0;
+                            const meetsTarget = lastVal >= 95;
+                            const isImproving = pts.length >= 2 && (lastPt?.day.value ?? 0) >= (pts[0]?.day.value ?? 0);
+                            const accentColor = meetsTarget ? '#19E3D2' : isImproving ? '#19E3D2' : '#EF4444';
+                            const accentGlow = meetsTarget ? 'rgba(25,227,210,0.25)' : isImproving ? 'rgba(25,227,210,0.25)' : 'rgba(239,68,68,0.2)';
+
+                            // Grid lines: 4 horizontal, subtle
+                            const gridLines = [];
+                            const gridCount = 4;
+                            for (let g = 1; g < gridCount; g++) {
+                                const gy = PAD_Y + (g / gridCount) * (H - PAD_Y * 2);
+                                gridLines.push(gy);
+                            }
+
+                            return (
+                                <div className="dash-trend-chart-area">
+                                    <svg viewBox={`0 0 ${W} ${H}`} className="dash-trend-svg" preserveAspectRatio="none">
+                                        <defs>
+                                            {/* Line gradient */}
+                                            <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
+                                                <stop offset="0%" stopColor="#0E9AA0" stopOpacity="0.5"/>
+                                                <stop offset="40%" stopColor="#19E3D2" stopOpacity="0.9"/>
+                                                <stop offset="100%" stopColor="#2EF2E0"/>
+                                            </linearGradient>
+                                            {/* Area gradient */}
+                                            <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
+                                                <stop offset="0%" stopColor={accentColor} stopOpacity="0.12"/>
+                                                <stop offset="50%" stopColor={accentColor} stopOpacity="0.03"/>
+                                                <stop offset="100%" stopColor={accentColor} stopOpacity="0"/>
+                                            </linearGradient>
+                                            {/* Subtle line glow */}
+                                            <filter id="glowLine" x="-5%" y="-20%" width="110%" height="140%">
+                                                <feGaussianBlur stdDeviation="0.4" result="blur"/>
+                                                <feMerge>
+                                                    <feMergeNode in="blur"/>
+                                                    <feMergeNode in="SourceGraphic"/>
+                                                </feMerge>
+                                            </filter>
+                                            {/* Endpoint marker glow — refined, multi-layer */}
+                                            <filter id="endpointGlow" x="-300%" y="-300%" width="700%" height="700%">
+                                                <feGaussianBlur stdDeviation="0.8" result="softBlur"/>
+                                                <feMerge>
+                                                    <feMergeNode in="softBlur"/>
+                                                    <feMergeNode in="SourceGraphic"/>
+                                                </feMerge>
+                                            </filter>
+                                            <filter id="endpointAura" x="-400%" y="-400%" width="900%" height="900%">
+                                                <feGaussianBlur stdDeviation="1.8" result="auraBlur"/>
+                                                <feMerge>
+                                                    <feMergeNode in="auraBlur"/>
+                                                </feMerge>
+                                            </filter>
+                                        </defs>
+
+                                        {/* Ultra-subtle grid lines */}
+                                        {gridLines.map((gy, gi) => (
+                                            <line key={gi} x1={PAD_X} y1={gy} x2={W - PAD_X} y2={gy}
+                                                stroke="rgba(255,255,255,0.025)" strokeWidth="0.3"/>
+                                        ))}
+
+                                        {/* Meta 95% dashed line — subtle, elegant */}
+                                        {showMeta && (
+                                            <>
+                                                <line x1={PAD_X} y1={meta95y} x2={W - PAD_X} y2={meta95y}
+                                                    stroke="rgba(0,212,255,0.08)" strokeWidth="0.3" strokeDasharray="1.2 1.8"/>
+                                                <text x={W - PAD_X - 0.5} y={meta95y - 0.8}
+                                                    fill="rgba(0,212,255,0.2)" fontSize="2" fontWeight="500"
+                                                    textAnchor="end" fontFamily="Inter, system-ui, sans-serif"
+                                                    letterSpacing="0.3">
+                                                    Meta 95%
+                                                </text>
+                                            </>
+                                        )}
+
+                                        {/* Gradient area fill */}
+                                        {areaPath && <path d={areaPath} fill="url(#areaGrad)" />}
+
+                                        {/* Main line — clean, premium */}
+                                        {smoothPath && (
+                                            <>
+                                                {/* Soft ambient glow beneath */}
+                                                <path d={smoothPath} fill="none" stroke={accentColor}
+                                                    strokeWidth="1.8" strokeOpacity="0.04"
+                                                    strokeLinecap="round" strokeLinejoin="round"/>
+                                                {/* Main line */}
+                                                <path d={smoothPath} fill="none" stroke="url(#lineGrad)"
+                                                    strokeWidth="0.8" strokeLinecap="round" strokeLinejoin="round"
+                                                    filter="url(#glowLine)"/>
+                                            </>
+                                        )}
+
+                                        {/* Data points — minimal, refined */}
+                                        {pts.map((p, pi) => {
+                                            const isLast = pi === pts.length - 1;
+                                            const isTodayPt = p.day.date === todayStr;
+                                            return (
+                                                <g key={pi}>
+                                                    {/* Endpoint marker — last point only */}
+                                                    {isLast && (
+                                                        <>
+                                                            {/* Layer 1: Outer aura glow */}
+                                                            <circle cx={p.x} cy={p.y} r="4"
+                                                                fill={accentColor} fillOpacity="0.06"
+                                                                filter="url(#endpointAura)"/>
+                                                            {/* Layer 2: Soft expanding pulse ring */}
+                                                            <circle cx={p.x} cy={p.y} r="1.5"
+                                                                fill="none" stroke={accentColor} strokeWidth="0.25"
+                                                                className="trend-pulse-ring"
+                                                                strokeOpacity="0.35"/>
+                                                            {/* Layer 3: Translucent outer ring */}
+                                                            <circle cx={p.x} cy={p.y} r="2.2"
+                                                                fill={accentColor} fillOpacity="0.08"
+                                                                stroke={accentColor} strokeWidth="0.15"
+                                                                strokeOpacity="0.2"/>
+                                                            {/* Layer 4: Core dot — solid, bright */}
+                                                            <circle cx={p.x} cy={p.y} r="1"
+                                                                fill={accentColor} fillOpacity="0.95"
+                                                                filter="url(#endpointGlow)"
+                                                                className="trend-last-dot"/>
+                                                        </>
+                                                    )}
+                                                    {/* Intermediate points — minimal */}
+                                                    {!isLast && (
+                                                        <circle cx={p.x} cy={p.y}
+                                                            r={isTodayPt ? 0.8 : 0.5}
+                                                            fill={isTodayPt ? '#19E3D2' : 'rgba(255,255,255,0.1)'}
+                                                            fillOpacity={isTodayPt ? 0.7 : 0.6}
+                                                        />
+                                                    )}
+                                                </g>
+                                            );
+                                        })}
+                                    </svg>
+
+                                    {/* Axis ticks */}
+                                    <div className="dash-trend-axis">
+                                        {saidasTrend.map((day) => {
+                                            const d = new Date(day.date + 'T12:00:00');
+                                            const weekday = d.toLocaleDateString('pt-BR', { weekday: 'short' });
+                                            const dayNum = d.getDate();
+                                            const isToday = day.date === todayStr;
+                                            return (
+                                                <span key={day.date} className={`dash-trend-tick ${isToday ? 'dash-trend-tick-active' : ''}`}>
+                                                    <span className="dash-trend-tick-val">
+                                                        {day.value !== null ? `${day.value!.toFixed(1)}` : '—'}
                                                     </span>
-                                                )}
-                                                {isAtrasada && !s.horarioInicio && atrasoMin !== null && filterMode === 'celula' && (
-                                                    <span style={{ fontSize: 10, color: 'var(--red)', marginLeft: 6 }}>
-                                                        {formatTimeDelta(atrasoMin)} sem sair
-                                                    </span>
-                                                )}
-                                            </td>
-                                            <td>{s.horarioSaida || '--'}</td>
-                                            <td>{s.horarioInicio ? s.horarioInicio : <span style={{ color: isAtrasada ? 'var(--red)' : 'var(--text-muted)' }}>Pendente</span>}</td>
-                                            <td>{s.motivoAtraso || '--'}</td>
-                                            <td className="col-obs">{s.observacao || '--'}</td>
-                                        </tr>
-                                    );
-                                }) : (
-                                    <tr>
-                                        <td colSpan={7} style={{ textAlign: 'center', padding: 24, color: 'var(--text-muted)' }}>
-                                            {loading ? 'Carregando...' : 'Nenhuma saída registrada'}
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
+                                                    <span className="dash-trend-tick-day">{weekday} {dayNum}</span>
+                                                </span>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            );
+                        })()}
                 </section>
 
                     {/* Pendentes de Verificação */}

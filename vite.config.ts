@@ -14,6 +14,7 @@ import {
     type RouteWebRouteDbRow,
     type MaintenanceDbRow
 } from './utils/rweDb';
+import { getHistFromSharePoint } from './utils/graphAppAuth';
 
 const readJsonBody = (req: any): Promise<any> =>
     new Promise((resolve, reject) => {
@@ -170,6 +171,81 @@ const routeWebDevPlugin = (mode: string) => ({
                         success: false,
                         error: error?.message || 'Erro ao consultar rotas pendentes'
                     });
+                }
+            }
+
+            if ((req.method === 'POST' || req.method === 'GET') && pathname === '/api/cco-departures-trend') {
+                try {
+                    const body = req.method === 'POST'
+                        ? await readJsonBody(req)
+                        : Object.fromEntries(new URL(String(req.url || ''), 'http://localhost').searchParams);
+                    const operacoes: string[] = Array.isArray(body?.operacoes)
+                        ? body.operacoes.map(String).filter(Boolean)
+                        : [];
+
+                    const normStr = (s: string) => s.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '').trim();
+                    const motivosInternos = ['mao de obra', 'manutencao', 'logistica'];
+                    const isMotivoInterno = (m: string | null) => {
+                        if (!m) return false;
+                        const n = m.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+                        return motivosInternos.some(mi => n.includes(mi));
+                    };
+                    const operacaoNorms = new Set(operacoes.map(normStr));
+                    const toDay = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+
+                    const today = new Date();
+                    const todayStr = toDay(today);
+                    const byDate = new Map<string, { total: number; descontam: number; adiantadas: number }>();
+                    for (let i = 6; i >= 0; i--) {
+                        const d = new Date(today); d.setDate(d.getDate() - i);
+                        byDate.set(toDay(d), { total: 0, descontam: 0, adiantadas: 0 });
+                    }
+
+                    // Today from DB
+                    try {
+                        const rows = await getDeparturesByDate(todayStr);
+                        for (const row of rows) {
+                            if (operacaoNorms.size > 0 && !operacaoNorms.has(normStr(row.operacao || ''))) continue;
+                            const st = (row.status_rota || '').toUpperCase();
+                            const stats = byDate.get(todayStr)!;
+                            stats.total += 1;
+                            if (st.includes('ATRAS') && isMotivoInterno(row.motivo_atraso)) stats.descontam += 1;
+                            if (st.includes('ADIANT')) stats.adiantadas += 1;
+                        }
+                    } catch {}
+
+                    // Past 6 days from SharePoint
+                    const pastEnd = new Date(today); pastEnd.setDate(pastEnd.getDate() - 1);
+                    const start = new Date(today); start.setDate(start.getDate() - 6);
+                    const startStr = toDay(start);
+                    const pastEndStr = toDay(pastEnd);
+                    if (startStr <= pastEndStr) {
+                        try {
+                            const hist = await getHistFromSharePoint(startStr, pastEndStr, operacoes);
+                            for (const row of hist) {
+                                const stats = byDate.get(row.data_operacao);
+                                if (!stats) continue;
+                                const st = (row.status_rota || '').toUpperCase();
+                                stats.total += 1;
+                                if (st.includes('ATRAS') && isMotivoInterno(row.motivo_atraso)) stats.descontam += 1;
+                                if (st.includes('ADIANT')) stats.adiantadas += 1;
+                            }
+                        } catch (e: any) { console.warn('[TREND][DEV] SharePoint err:', e?.message); }
+                    }
+
+                    const trend = [];
+                    for (let i = 6; i >= 0; i--) {
+                        const d = new Date(today); d.setDate(d.getDate() - i);
+                        const key = toDay(d);
+                        const s = byDate.get(key)!;
+                        const value = s.total > 0 ? Math.round(((s.total - s.descontam - s.adiantadas) / s.total) * 10000) / 100 : null;
+                        trend.push({ date: key, value, total: s.total });
+                    }
+
+                    return writeJson(res, 200, { success: true, trend });
+                } catch (error: any) {
+                    console.error('[CCO_DEPARTURES_TREND][DEV] Erro:', error?.message || error);
+                    return writeJson(res, 500, { success: false, error: error?.message || 'Erro' });
                 }
             }
 

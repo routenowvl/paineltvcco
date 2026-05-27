@@ -403,3 +403,28 @@ export const fetchPlantConfigs = async (): Promise<PlantConfig[]> => {
         })
         .filter((c: PlantConfig | null): c is PlantConfig => c !== null);
 };
+
+// ─── Trend 7 dias ────────────────────────────────────────────────
+export interface TrendDay {
+    date: string;
+    value: number | null;
+    total: number;
+}
+
+export const fetchSaidasTrend = async (
+    operacoes: string[]
+): Promise<TrendDay[]> => {
+    const response = await fetch(`${API_BASE}/cco-departures-trend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operacoes })
+    });
+
+    if (!response.ok) {
+        const err = await response.json().catch(() => ({ error: 'Erro desconhecido' }));
+        throw new Error(err.error || `Erro ${response.status} ao consultar tendência`);
+    }
+
+    const data = await response.json();
+    return data.trend || [];
+};

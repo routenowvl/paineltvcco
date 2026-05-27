@@ -206,3 +206,102 @@ export const getPlantConfigsFromSharePoint = async (): Promise<PlantConfig[]> =>
     console.log(`[SHAREPOINT_CONFIG] ${configs.length} plant configs obtidas`);
     return configs;
 };
+
+// ─── checklist_web_hist ─────────────────────────────────────────
+// Fetches historical departure rows from the SharePoint list
+// "checklist_web_hist" for a given date range and set of operacoes.
+
+export type HistRow = {
+    data_operacao: string;   // YYYY-MM-DD
+    operacao: string;
+    status_rota: string | null;
+    motivo_atraso: string | null;
+};
+
+const HIST_LIST_ID = '856bf9d5-6081-4360-bcad-e771cbabfda8';
+
+/** Try multiple possible internal names for a SharePoint column */
+const resolveField = (fields: Record<string, any>, candidates: string[]): any => {
+    for (const name of candidates) {
+        if (fields[name] != null && String(fields[name]).trim() !== '') return fields[name];
+    }
+    // Fallback: search by normalized key
+    for (const [key, val] of Object.entries(fields)) {
+        const nk = normalizeString(key);
+        for (const c of candidates) {
+            if (nk === normalizeString(c) && val != null && String(val).trim() !== '') return val;
+        }
+    }
+    return null;
+};
+
+export const getHistFromSharePoint = async (
+    startDate: string,   // YYYY-MM-DD
+    endDate: string,     // YYYY-MM-DD
+    operacoes: string[]  // raw operacao names to filter
+): Promise<HistRow[]> => {
+    const sitePath = readEnv('VITE_SHAREPOINT_SITE_PATH');
+    if (!sitePath) throw new Error('VITE_SHAREPOINT_SITE_PATH não configurada');
+
+    const token = await getGraphAppToken();
+    const siteData = await graphAppFetch(`/sites/${sitePath}`, token);
+    const siteId = siteData.id;
+
+    // Resolve column internal names via /columns endpoint
+    const mapping = await getListColumnMapping(siteId, HIST_LIST_ID, token);
+    const colDateOperacao = resolveFieldName(mapping, 'DataOperacao');
+    const colOperacao = resolveFieldName(mapping, 'Operacao');
+    const colStatusOp = resolveFieldName(mapping, 'StatusOp');
+    const colMotivoAtraso = resolveFieldName(mapping, 'MotivoAtraso');
+
+    console.log(`[SHAREPOINT_HIST] Column mapping: DataOperacao=${colDateOperacao}, Operacao=${colOperacao}, StatusOp=${colStatusOp}, MotivoAtraso=${colMotivoAtraso}`);
+
+    // Build OData filter using resolved internal column name for date
+    const filter = `fields/${colDateOperacao} ge '${startDate}T00:00:00Z' and fields/${colDateOperacao} le '${endDate}T23:59:59Z'`;
+
+    let allItems: any[] = [];
+    let url: string | null =
+        `/sites/${siteId}/lists/${HIST_LIST_ID}/items?expand=fields&$filter=${encodeURIComponent(filter)}&$top=999`;
+
+    // Paginate through results
+    let pages = 0;
+    while (url && pages < 20) {
+        const data = await graphAppFetch(url, token);
+        allItems = allItems.concat(data.value || []);
+        url = data['@odata.nextLink']
+            ? data['@odata.nextLink'].replace('https://graph.microsoft.com/v1.0', '')
+            : null;
+        pages++;
+    }
+
+    console.log(`[SHAREPOINT_HIST] ${allItems.length} itens baixados, filtrando ${operacoes.length} operacoes`);
+
+    // Normalize operacoes for matching
+    const normSet = new Set(operacoes.map(o => normalizeString(o)));
+
+    const rows: HistRow[] = [];
+    for (const item of allItems) {
+        const f = item.fields || {};
+
+        const operacaoRaw = resolveField(f, [colOperacao, 'Operacao', 'OPERACAO']);
+        const operacao = String(operacaoRaw || '').trim();
+        if (!operacao || !normSet.has(normalizeString(operacao))) continue;
+
+        const rawDate = String(resolveField(f, [colDateOperacao, 'DataOperacao']) || '').trim();
+        const datePart = rawDate.slice(0, 10); // YYYY-MM-DD
+        if (!datePart || datePart.length < 10) continue;
+
+        const statusRota = resolveField(f, [colStatusOp, 'StatusOp', 'STATUS_OP', 'StatusRota']);
+        const motivoAtraso = resolveField(f, [colMotivoAtraso, 'MotivoAtraso', 'MOTIVO_ATRASO']);
+
+        rows.push({
+            data_operacao: datePart,
+            operacao,
+            status_rota: statusRota != null ? String(statusRota) : null,
+            motivo_atraso: motivoAtraso != null ? String(motivoAtraso) : null,
+        });
+    }
+
+    console.log(`[SHAREPOINT_HIST] ${rows.length} linhas após filtro de operacao`);
+    return rows;
+};

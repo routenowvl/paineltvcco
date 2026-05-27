@@ -580,6 +580,247 @@ body {
     margin-top: 2px;
 }
 
+/* ================================================================
+   CENTER PANEL — Trend Chart (Premium Glassmorphism)
+   ================================================================ */
+
+/* ── Next route banner ── */
+.dash-next-route {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 16px;
+    border-bottom: 1px solid rgba(0, 212, 255, 0.06);
+    background: linear-gradient(90deg, rgba(0, 212, 255, 0.04) 0%, transparent 60%);
+    border-left: 3px solid rgba(0, 212, 255, 0.35);
+    flex-shrink: 0;
+}
+
+.dash-next-route-label {
+    font-size: 9px;
+    font-weight: 700;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.dash-next-route-name {
+    font-weight: 700;
+    color: var(--text-primary);
+    font-size: 13px;
+}
+
+.dash-next-route-time {
+    font-weight: 700;
+    font-size: 12px;
+    color: #00d4ff;
+}
+
+/* ── Panel variant for trend — premium dark glass ── */
+.dash-panel-trend {
+    background: linear-gradient(135deg, #071120 0%, #0b1628 50%, #081421 100%);
+    border: 1px solid rgba(0, 212, 255, 0.07);
+    border-radius: var(--r-lg);
+    box-shadow:
+        0 0 30px rgba(0, 212, 255, 0.03),
+        inset 0 1px 0 rgba(255, 255, 255, 0.03);
+    position: relative;
+    overflow: hidden;
+}
+
+.dash-panel-trend::before {
+    content: '';
+    position: absolute;
+    top: -40%;
+    right: -10%;
+    width: 50%;
+    height: 80%;
+    background: radial-gradient(ellipse, rgba(0, 212, 255, 0.04) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+/* ── Header: Context + badge — premium layout ── */
+.dash-trend-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 20px 4px;
+    flex-shrink: 0;
+    gap: 16px;
+    position: relative;
+    z-index: 1;
+}
+
+.dash-trend-kpi-group {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+}
+
+.dash-trend-kpi-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding-top: 2px;
+}
+
+.dash-trend-kpi-label {
+    font-size: 10px;
+    font-weight: 700;
+    color: #00d4ff;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    text-shadow: 0 0 8px rgba(0, 212, 255, 0.1);
+}
+
+.dash-trend-kpi-sub {
+    font-size: 11px;
+    color: #4A5F7A;
+    letter-spacing: 0.3px;
+    line-height: 1.4;
+}
+
+.dash-trend-kpi-sub .sub-dot {
+    color: #2a3a52;
+    margin: 0 5px;
+}
+
+.dash-trend-kpi-sub .sub-num {
+    color: #7E8BA3;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.dash-trend-kpi-sub .sub-alert {
+    color: #EF4444;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+/* ── Trend badge — premium pill ── */
+.dash-trend-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 12px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+}
+
+.dash-trend-badge-up {
+    color: #2DD4BF;
+    background: rgba(45, 212, 191, 0.08);
+    border: 1px solid rgba(45, 212, 191, 0.12);
+    box-shadow: 0 0 8px rgba(45, 212, 191, 0.06);
+}
+
+.dash-trend-badge-down {
+    color: #EF4444;
+    background: rgba(239, 68, 68, 0.08);
+    border: 1px solid rgba(239, 68, 68, 0.12);
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.06);
+}
+
+/* ── Chart area ── */
+.dash-trend-chart-area {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 0 20px 12px;
+    gap: 6px;
+    position: relative;
+    z-index: 1;
+}
+
+.dash-trend-svg {
+    width: 100%;
+    flex: 1;
+    display: block;
+    min-height: 0;
+}
+
+/* ── Animated pulse for endpoint marker ── */
+@keyframes pulse-ring {
+    0% { r: 1.5; stroke-opacity: 0.35; }
+    70% { r: 4.5; stroke-opacity: 0; }
+    100% { r: 4.5; stroke-opacity: 0; }
+}
+
+@keyframes pulse-dot {
+    0%, 100% { fill-opacity: 0.95; }
+    50% { fill-opacity: 0.75; }
+}
+
+.trend-pulse-ring {
+    animation: pulse-ring 3s ease-out infinite;
+    transform-origin: center;
+}
+
+.trend-last-dot {
+    animation: pulse-dot 3s ease-in-out infinite;
+}
+
+/* ── Axis ── */
+.dash-trend-axis {
+    display: flex;
+    width: 100%;
+    flex-shrink: 0;
+    padding-top: 2px;
+}
+
+.dash-trend-tick {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    min-width: 0;
+    padding-top: 4px;
+    border-top: 1px solid rgba(255, 255, 255, 0.03);
+    transition: border-color 0.3s ease;
+}
+
+.dash-trend-tick-val {
+    font-size: 9px;
+    font-weight: 700;
+    color: #3D4A5E;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    transition: color 0.3s ease;
+}
+
+.dash-trend-tick-day {
+    font-size: 8px;
+    color: #2A3548;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    white-space: nowrap;
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+
+.dash-trend-tick-active {
+    border-top-color: rgba(0, 212, 255, 0.2);
+}
+
+.dash-trend-tick-active .dash-trend-tick-val {
+    color: #E6EDF7;
+    font-weight: 800;
+    text-shadow: 0 0 8px rgba(0, 212, 255, 0.2);
+}
+
+.dash-trend-tick-active .dash-trend-tick-day {
+    color: #00d4ff;
+    font-weight: 700;
+}
+
 .dash-table-wrap {
     flex: 1;
     min-height: 0;
