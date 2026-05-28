@@ -225,7 +225,7 @@ export function Dashboard(): JSX.Element {
                 label: `CÉLULA ${idx + 1}`,
                 email,
                 filiais: fils,
-                plantIds: fils.map(f => f.plantId!).filter((id): id is number => id != null),
+                plantIds: fils.map(f => f.plantId).filter((id): id is number => id != null && id > 0),
             }));
     }, [filiais]);
 
@@ -255,7 +255,7 @@ export function Dashboard(): JSX.Element {
                 id: normalizeOperation(pc.operacao),
                 operacao: pc.operacao,
                 nomeExibicao: pc.filial,
-                plantId: pc.plantId,
+                plantId: pc.plantId ?? undefined,
                 email: pc.email,
             }));
             fc.sort((a, b) => a.nomeExibicao.localeCompare(b.nomeExibicao, 'pt-BR', { sensitivity: 'base' }));
@@ -313,10 +313,10 @@ export function Dashboard(): JSX.Element {
     useEffect(() => {
         let cancelled = false;
         const plantIds = filterMode === 'celula' && activeCelula
-            ? activeCelula.plantIds.filter((id): id is number => id != null)
-            : activeFilial && activeFilial.plantId != null
+            ? activeCelula.plantIds.filter((id): id is number => id != null && id > 0)
+            : activeFilial && activeFilial.plantId != null && activeFilial.plantId > 0
                 ? [activeFilial.plantId]
-                : filiais.map(f => f.plantId).filter((id): id is number => id != null);
+                : filiais.map(f => f.plantId).filter((id): id is number => id != null && id > 0);
 
         if (plantIds.length > 0) {
             fetchRotasPendentesCount(plantIds).then(count => {
@@ -339,9 +339,12 @@ export function Dashboard(): JSX.Element {
                 ? [activeFilial.operacao]
                 : [];
 
+        console.log('[TREND] mode:', filterMode, '| operacoes:', operacoes, '| activeFilial:', activeFilial?.operacao ?? 'null');
+
         if (operacoes.length > 0) {
             fetchSaidasTrend(operacoes).then(trend => {
                 if (!cancelled) {
+                    console.log('[TREND] result:', trend.length, 'days | values:', trend.map(d => d.value));
                     setSaidasTrend(trend);
                     setTrendLoaded(true);
                 }
@@ -351,10 +354,10 @@ export function Dashboard(): JSX.Element {
             });
         } else {
             setSaidasTrend([]);
-            setTrendLoaded(true);
+            if (!loading) setTrendLoaded(true);
         }
         return () => { cancelled = true; };
-    }, [activeFilial, activeCelula, filterMode]);
+    }, [activeFilial, activeCelula, filterMode, loading]);
 
     /* ── computed data ── */
     const saidasFilial = useMemo(() => {
@@ -485,6 +488,11 @@ export function Dashboard(): JSX.Element {
                 ? new Set([normalizeOperation(activeFilial.operacao)])
                 : null;
 
+        if (opsSet && produtoresSemColeta.length > 0) {
+            const sampleOps = [...new Set(produtoresSemColeta.map(p => normalizeOperation(p.operacao)))].slice(0, 5);
+            console.log('[48H] filter ops:', [...opsSet], '| data sample ops:', sampleOps, '| total produtores:', produtoresSemColeta.length);
+        }
+
         const unique = new Map<string, typeof produtoresSemColeta[number] & { dias_sem_coleta: number }>();
         for (const p of produtoresSemColeta) {
             if (opsSet && !opsSet.has(normalizeOperation(p.operacao))) continue;
@@ -501,9 +509,11 @@ export function Dashboard(): JSX.Element {
                 unique.set(key, { ...p, dias_sem_coleta: dias });
             }
         }
-        return Array.from(unique.values())
+        const result = Array.from(unique.values())
             .filter(p => p.dias_sem_coleta >= 2)
             .sort((a, b) => b.dias_sem_coleta - a.dias_sem_coleta);
+        if (opsSet) console.log('[48H] matched:', result.length, 'produtores');
+        return result;
     }, [produtoresSemColeta, activeFilial, activeCelula, filterMode]);
 
     /* ── Timeline routes sorted: earliest departure at top, latest at bottom ── */

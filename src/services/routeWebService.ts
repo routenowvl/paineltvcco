@@ -188,7 +188,7 @@ export const fetchRouteWebRoutes = async (dataReferencia?: string, plantIds?: nu
 };
 
 export interface PlantConfig {
-    plantId: number;
+    plantId: number | null;
     operacao: string;
     filial: string;
     email: string;
@@ -395,7 +395,7 @@ export const fetchPlantConfigs = async (): Promise<PlantConfig[]> => {
                     : null;
 
             return {
-                plantId: plantId ?? 0,
+                plantId: plantId ?? null,
                 operacao,
                 filial: String(c.nome_exibicao || operacao).trim(),
                 email: String(c.email || '').trim(),
