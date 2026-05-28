@@ -9,35 +9,40 @@ async function bootstrap() {
 
     await resolveLoginResponseForCurrentMode();
 
-    const token = await ensurePrimaryAuthSession(undefined, { interactive: true });
-    if (!token) {
-        console.error('[BOOT] Não foi possível estabelecer sessão de autenticação.');
-        document.getElementById('root')!.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:center;height:100vh;background:#073551;color:#f0f6ff;font-family:sans-serif;flex-direction:column;gap:16px;">
-                <h2>Falha na autenticação</h2>
-                <button onclick="location.reload()" style="padding:10px 24px;font-size:16px;border-radius:8px;border:none;cursor:pointer;background:#1d8cf5;color:#fff;">Tentar novamente</button>
-            </div>
-        `;
-        return;
-    }
-
-    console.log('[BOOT] Sessão estabelecida com sucesso');
-
-    const cleanupRefresh = startTokenRefreshLoop(() => {
-        console.warn('[BOOT] Sessão expirada — recarregando...');
-        stopTokenRefreshLoop();
-        window.location.reload();
-    });
-
-    window.addEventListener('token-expired', () => {
-        console.warn('[BOOT] Evento token-expired recebido');
-    });
-
     createRoot(document.getElementById('root')!).render(
         <StrictMode>
             <Dashboard />
         </StrictMode>
     );
+
+    const token = await ensurePrimaryAuthSession(undefined, { interactive: false });
+    if (token) {
+        console.log('[BOOT] Sessão estabelecida com sucesso');
+    } else {
+        console.warn('[BOOT] Sessão AAD não estabelecida no boot; painel segue em modo resiliente.');
+    }
+
+    startTokenRefreshLoop(() => {
+        // Keep TV panel alive: never drop UI due to auth refresh failures.
+        void ensurePrimaryAuthSession(undefined, { interactive: false }).then((recovered) => {
+            if (recovered) {
+                console.log('[BOOT] Sessão recuperada silenciosamente após expiração.');
+                return;
+            }
+            console.warn('[BOOT] Não foi possível recuperar sessão silenciosa. Painel permanece exibindo dados server-side.');
+        });
+    });
+
+    window.addEventListener('token-expired', () => {
+        console.warn('[BOOT] Evento token-expired recebido. Tentando recuperar sessão silenciosamente...');
+        void ensurePrimaryAuthSession(undefined, { interactive: false }).then((recovered) => {
+            if (recovered) {
+                console.log('[BOOT] Sessão recuperada via token-expired.');
+                return;
+            }
+            console.warn('[BOOT] Recuperação silenciosa falhou após token-expired. Painel permanece ativo.');
+        });
+    });
 }
 
 void bootstrap();

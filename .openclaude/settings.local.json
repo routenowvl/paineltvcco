@@ -26,7 +26,9 @@
       "Bash(grep -ri celula /c/Projetos/painelcco/src/ --include=*.ts --include=*.tsx --include=*.js --include=*.jsx --include=*.vue -l)",
       "Bash(grep -ri celula /c/Projetos/painelcco/ --include=*.ts --include=*.tsx --include=*.js --include=*.jsx --include=*.vue -l)",
       "Bash(find /c/Projetos/painelcco -type f \\\\\\(-name *.ts -o -name *.tsx -o -name *.js -o -name *.jsx \\\\\\))",
-      "Bash(grep -ri checklist_web --include=*.ts --include=*.tsx --include=*.env* .)"
+      "Bash(grep -ri checklist_web --include=*.ts --include=*.tsx --include=*.env* .)",
+      "Bash(grep -rn -i \"7 dias\\\\|saidasTrend\\\\|variacao\\\\|trend\\\\|vs ontem\\\\|Evolução\" /c/Projetos/painelcco/src/ --include=*.ts --include=*.tsx)",
+      "Bash(findstr /n \"rotasPendentes fetchRotasPendentes datalakePlantIdMap\" \"C:\\\\Projetos\\\\painelcco\\\\src\\\\Dashboard.tsx\")"
     ]
   }
 }

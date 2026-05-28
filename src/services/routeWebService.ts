@@ -189,10 +189,21 @@ export const fetchRouteWebRoutes = async (dataReferencia?: string, plantIds?: nu
 
 export interface PlantConfig {
     plantId: number | null;
+    datalakePlantId: number | null;
     operacao: string;
     filial: string;
     email: string;
+    tolerancia: string | null;
 }
+
+const parseConfigInt = (raw: unknown): number | null => {
+    if (typeof raw === 'number' && Number.isFinite(raw)) return Math.trunc(raw);
+    if (raw == null) return null;
+    const normalized = String(raw).trim();
+    if (!normalized) return null;
+    const n = Number(normalized.replace(',', '.'));
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+};
 
 export interface SaidaRotaItem {
     id: string;
@@ -204,6 +215,7 @@ export interface SaidaRotaItem {
     observacao: string | null;
     horarioInicio: string | null;
     placa: string;
+    tempoResposta: string | null;
 }
 
 export interface NaoColetaItem {
@@ -295,6 +307,7 @@ export const fetchSaidasRotas = async (dataReferencia?: string): Promise<SaidaRo
         observacao: d.observacao || null,
         horarioInicio: d.hora_saida || null,
         placa: String(d.placa_veiculo || '').trim(),
+        tempoResposta: d.tempo_resposta || null,
     }));
 };
 
@@ -384,21 +397,16 @@ export const fetchPlantConfigs = async (): Promise<PlantConfig[]> => {
             const operacao = String(c.operacao || '').trim();
             if (!operacao) return null;
 
-            const plantIdRaw = c.plant_id;
-            const plantId = typeof plantIdRaw === 'number' && Number.isFinite(plantIdRaw)
-                ? Math.trunc(plantIdRaw)
-                : plantIdRaw != null && String(plantIdRaw).trim() !== ''
-                    ? (() => {
-                        const n = Number(String(plantIdRaw).replace(',', '.'));
-                        return Number.isFinite(n) ? Math.trunc(n) : null;
-                    })()
-                    : null;
+            const plantId = parseConfigInt(c.plant_id);
+            const datalakePlantId = parseConfigInt(c.datalake_plant_id);
 
             return {
                 plantId: plantId ?? null,
+                datalakePlantId: datalakePlantId ?? plantId ?? null,
                 operacao,
                 filial: String(c.nome_exibicao || operacao).trim(),
                 email: String(c.email || '').trim(),
+                tolerancia: c.tolerancia != null ? String(c.tolerancia).trim() : null,
             };
         })
         .filter((c: PlantConfig | null): c is PlantConfig => c !== null);

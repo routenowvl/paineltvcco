@@ -20,7 +20,7 @@
     --cyan: #00d4ff;
     --blue: #3b8bff;
     --green: #00e676;
-    --red: #ff4d4f;
+    --red: #FF4D57;
     --amber: #ffab00;
     --orange: #ff6d00;
 
@@ -28,7 +28,7 @@
     --route-gray: #6b7280;
     --route-blue: #3b8bff;
     --route-yellow: #f59e0b;
-    --route-red: #ef4444;
+    --route-red: #FF4D57;
 
     /* Surfaces */
     --border: rgba(255, 255, 255, 0.05);
@@ -156,7 +156,7 @@ body {
     color: var(--text-primary);
     background: rgba(255, 255, 255, 0.04);
 }
-.ticker-late::before { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.ticker-late::before { background: var(--red); box-shadow: 0 0 8px var(--red), 0 0 3px var(--red); }
 
 .ticker-default {
     color: var(--text-primary);
@@ -194,30 +194,31 @@ body {
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 18px;
-    min-width: 130px;
+    gap: 14px;
+    min-width: 170px;
     flex-shrink: 0;
-    padding: 10px 20px;
+    padding: 12px 24px;
 }
 
 .dash-header-logo {
     display: flex;
     align-items: center;
-    justify-content: center;
+    gap: 6px;
 }
 
 .dash-logo-img {
-    height: 32px;
+    height: 28px;
     width: auto;
     object-fit: contain;
+    vertical-align: middle;
     opacity: 0.9;
 }
 
 .dash-header-title {
-    font-size: 12px;
+    font-size: 14px;
     font-weight: 700;
     color: var(--cyan);
-    letter-spacing: 1px;
+    letter-spacing: 1.2px;
     text-transform: uppercase;
     white-space: nowrap;
     text-align: center;
@@ -225,7 +226,7 @@ body {
 
 .dash-top-right {
     display: grid;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(4, 1fr);
     gap: 10px;
     flex: 1;
 }
@@ -246,6 +247,27 @@ body {
     padding: 4px 0 2px;
     flex-shrink: 0;
     user-select: none;
+}
+
+/* Smooth visual transition when switching filial/celula */
+.dash-top-bar,
+.dash-ticker,
+.dash-main,
+.dash-update-footer {
+    transition:
+        filter 260ms ease,
+        opacity 260ms ease,
+        transform 260ms ease;
+    will-change: filter, opacity, transform;
+}
+
+.dash-shell-switching .dash-top-bar,
+.dash-shell-switching .dash-ticker,
+.dash-shell-switching .dash-main,
+.dash-shell-switching .dash-update-footer {
+    filter: blur(2.2px);
+    opacity: 0.58;
+    transform: translateY(4px) scale(0.997);
 }
 
 .dash-kpi-card {
@@ -274,7 +296,7 @@ body {
 
 .dash-kpi-card.kpi-good::before { background: var(--green); opacity: 0.6; }
 .dash-kpi-card.kpi-warn::before { background: var(--amber); opacity: 0.6; }
-.dash-kpi-card.kpi-bad::before { background: var(--red); opacity: 0.6; }
+.dash-kpi-card.kpi-bad::before { background: var(--red); opacity: 0.8; box-shadow: 0 0 12px var(--red), 0 0 4px var(--red); }
 
 .dash-kpi-top {
     display: flex;
@@ -340,7 +362,7 @@ body {
 
 .dash-kpi-bar-fill.bar-cyan { background: linear-gradient(90deg, var(--cyan), var(--blue)); }
 .dash-kpi-bar-fill.bar-green { background: linear-gradient(90deg, #00c853, var(--green)); }
-.dash-kpi-bar-fill.bar-red { background: linear-gradient(90deg, #d32f2f, var(--red)); }
+.dash-kpi-bar-fill.bar-red { background: linear-gradient(90deg, #b71c1c, var(--red)); box-shadow: 0 0 8px rgba(255, 77, 87, 0.4); }
 .dash-kpi-bar-fill.bar-amber { background: linear-gradient(90deg, #f57c00, var(--amber)); }
 
 /* ================================================================
@@ -419,6 +441,45 @@ body {
     text-transform: uppercase;
 }
 
+/* Timeline header: keep title + legend in a single row */
+.dash-panel-head-timeline {
+    justify-content: flex-start;
+    gap: 10px;
+    flex-wrap: nowrap;
+    min-width: 0;
+}
+
+.dash-panel-title-timeline {
+    white-space: nowrap;
+    flex-shrink: 0;
+    font-size: 10px;
+    letter-spacing: 1.4px;
+}
+
+.dash-panel-subtitle-timeline {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.dash-timeline-legend {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    flex-wrap: nowrap;
+    font-size: 8px;
+    letter-spacing: 0.3px;
+}
+
+.dash-timeline-legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
 /* ================================================================
    LEFT PANEL — Route Timeline Chart
    ================================================================ */
@@ -471,7 +532,15 @@ body {
     gap: 5px;
     overflow-y: auto;
     scroll-behavior: smooth;
-    padding-right: 2px;
+    padding-right: 0;
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* IE/Edge legacy */
+}
+
+.timeline-rows::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
 }
 
 .timeline-row {
@@ -513,7 +582,9 @@ body {
 }
 
 .timeline-bar-red {
-    background: linear-gradient(90deg, rgba(183, 28, 28, 0.85), rgba(239, 68, 68, 0.9));
+    background: linear-gradient(90deg, rgba(183, 28, 28, 0.85), rgba(255, 77, 87, 0.9));
+    color: #fff;
+    text-shadow: 0 0 6px rgba(0, 0, 0, 0.35);
 }
 
 .timeline-axis {
@@ -702,9 +773,9 @@ body {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 5px 12px;
+    padding: 7px 16px;
     border-radius: 20px;
-    font-size: 11px;
+    font-size: 13px;
     font-weight: 700;
     font-variant-numeric: tabular-nums;
     letter-spacing: 0.2px;
@@ -881,9 +952,10 @@ body {
 
 /* Status colors */
 .status-ok { color: var(--green); }
-.status-atrasado { color: var(--red); }
+.status-atrasado { color: var(--red); text-shadow: 0 0 6px rgba(255, 77, 87, 0.4); }
 .status-andamento { color: var(--amber); }
 .status-default { color: var(--text-muted); }
+.text-alert { color: var(--red); text-shadow: 0 0 8px rgba(255, 77, 87, 0.35); font-weight: 600; }
 
 /* ================================================================
    RIGHT PANEL — Bar Chart (Motivos Não Coletas)

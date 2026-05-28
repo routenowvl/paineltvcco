@@ -474,6 +474,7 @@ export type OperacaoConfigRow = {
     tolerancia: string | null;
     nome_exibicao: string | null;
     plant_id: string | null;
+    datalake_plant_id: string | null;
     status: string | null;
     envio: string | null;
     copia: string | null;

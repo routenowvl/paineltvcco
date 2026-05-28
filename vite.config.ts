@@ -36,6 +36,47 @@ const writeJson = (res: any, status: number, payload: any) => {
     res.end(JSON.stringify(payload));
 };
 
+const parsePlantIds = (raw: unknown): number[] => {
+    const toNum = (v: unknown): number | null => {
+        const n = Number(String(v).trim());
+        return Number.isFinite(n) ? Math.trunc(n) : null;
+    };
+
+    const collect = (values: unknown[]): number[] => {
+        const ids: number[] = [];
+        for (const value of values) {
+            if (typeof value === 'string' && value.includes(',')) {
+                for (const part of value.split(',')) {
+                    const n = toNum(part);
+                    if (n !== null) ids.push(n);
+                }
+                continue;
+            }
+            const n = toNum(value);
+            if (n !== null) ids.push(n);
+        }
+        return Array.from(new Set(ids.filter(id => id > 0)));
+    };
+
+    if (Array.isArray(raw)) return collect(raw);
+    if (typeof raw === 'string') {
+        const trimmed = raw.trim();
+        if (!trimmed) return [];
+        if (trimmed.startsWith('[') && trimmed.endsWith(']')) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                if (Array.isArray(parsed)) return collect(parsed);
+            } catch {
+                // fallback below
+            }
+        }
+        if (trimmed.includes(',')) return collect(trimmed.split(','));
+        return collect([trimmed]);
+    }
+    if (raw == null) return [];
+    return collect([raw]);
+};
+
 const routeWebDevPlugin = (mode: string) => ({
     name: 'route-web-dev-api',
     configureServer(server: any) {
@@ -153,18 +194,11 @@ const routeWebDevPlugin = (mode: string) => ({
                     const body = req.method === 'POST'
                         ? await readJsonBody(req)
                         : Object.fromEntries(new URL(String(req.url || ''), 'http://localhost').searchParams);
-
-                    let plantIds: number[] = [];
-                    const plantIdsRaw = body?.plantIds;
-                    if (Array.isArray(plantIdsRaw)) {
-                        plantIds = plantIdsRaw.map(Number).filter(Number.isFinite);
-                    } else if (plantIdsRaw != null) {
-                        const parsed = Number(plantIdsRaw);
-                        if (Number.isFinite(parsed)) plantIds = [parsed];
-                    }
+                    const hasPlantIdsField = body && Object.prototype.hasOwnProperty.call(body, 'plantIds');
+                    const plantIds = parsePlantIds(body?.plantIds);
 
                     const count = await getRotasPendentesCount(plantIds);
-                    return writeJson(res, 200, { success: true, count });
+                    return writeJson(res, 200, { success: true, count, filtered: hasPlantIdsField, plantIds });
                 } catch (error: any) {
                     console.error('[ROTAS_PENDENTES][DEV] Erro:', error?.message || error);
                     return writeJson(res, 500, {

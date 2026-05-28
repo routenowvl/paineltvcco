@@ -9,13 +9,15 @@ import {
     fetchRotasPendentesCount,
     fetchProdutoresSemColeta,
     fetchSaidasTrend,
+    fetchRouteWebRoutes,
     type PlantConfig,
     type SaidaRotaItem,
     type NaoColetaItem,
     type ColetaPrevistaItem,
     type MaintenanceItem,
     type ProdutorSemColetaItem,
-    type TrendDay
+    type TrendDay,
+    type RouteWebRoute
 } from './services/routeWebService';
 import logoImg from './assets/logo.png';
 import './styles/global.css';
@@ -24,10 +26,42 @@ import './styles/global.css';
 const timelineMarks = [0, 6, 12, 18, 24];
 const oneMinuteMs = 60_000;
 const ROTATE_INTERVAL_MS = 60_000;
+const PREFETCH_LEAD_MS = 40_000; // start loading next view when 40s remain
+const VIEW_SWITCH_ANIM_MS = 380;
 const toPercent = (h: number) => (h / 24) * 100;
 
 const normalizeOperation = (v: string) =>
     v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+
+const normalizeLooseText = (v: string) =>
+    v.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toUpperCase().trim();
+
+const EMPTY_TEXT_MARKERS = new Set([
+    'N/A',
+    'NA',
+    'NULL',
+    'NULO',
+    'NAN',
+    '-',
+    '--',
+    'SEM MOTIVO',
+    'SEM MOTIVOS',
+    'SEM OBS',
+    'SEM OBSERVACAO',
+    'NAO INFORMADO',
+    'NAO INFORMADA',
+]);
+
+const hasMeaningfulText = (value: string | null | undefined): boolean => {
+    if (value == null) return false;
+    const raw = String(value).trim();
+    if (!raw) return false;
+    const normalized = normalizeLooseText(raw);
+    if (!normalized) return false;
+    if (EMPTY_TEXT_MARKERS.has(normalized)) return false;
+    if (/^[\[\]\{\}\(\)\-_.:;,\s]+$/.test(normalized)) return false;
+    return true;
+};
 
 const getNowHour = () => {
     const d = new Date();
@@ -52,6 +86,42 @@ const parseClockToMinutes = (c: string | null | undefined): number | null => {
     return null;
 };
 
+const parseToleranceToMinutes = (value: string | null | undefined): number | null => {
+    if (!value) return null;
+    const raw = String(value).trim();
+    if (!raw) return null;
+
+    // "HH:MM" / "HH:MM:SS"
+    let m = /^(\d{1,3}):(\d{2})(?::(\d{2}))?$/.exec(raw);
+    if (m) {
+        const h = Number(m[1]);
+        const mi = Number(m[2]);
+        const s = Number(m[3] || 0);
+        if (Number.isFinite(h) && Number.isFinite(mi) && Number.isFinite(s) && mi <= 59 && s <= 59) {
+            return h * 60 + mi + (s >= 30 ? 1 : 0);
+        }
+    }
+
+    // "30" (minutes)
+    const numeric = Number(raw.replace(',', '.'));
+    if (Number.isFinite(numeric)) return Math.max(0, Math.trunc(numeric));
+
+    // "1h30", "1h", "30m"
+    m = /^(\d+)\s*h(?:\s*(\d{1,2})\s*m?)?$/i.exec(raw);
+    if (m) {
+        const h = Number(m[1]);
+        const mi = Number(m[2] || 0);
+        if (Number.isFinite(h) && Number.isFinite(mi)) return h * 60 + mi;
+    }
+    m = /^(\d+)\s*m(?:in)?$/i.exec(raw);
+    if (m) {
+        const mi = Number(m[1]);
+        if (Number.isFinite(mi)) return mi;
+    }
+
+    return null;
+};
+
 const parseClockToHour = (c: string | null | undefined): number | null => {
     const mins = parseClockToMinutes(c);
     return mins !== null ? mins / 60 : null;
@@ -68,6 +138,33 @@ const formatTimeDelta = (minutes: number): string => {
 const todayISO = () => {
     const d = new Date();
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const getSemColetaDaysStyle = (dias: number) => {
+    if (dias <= 2) {
+        return {
+            color: 'var(--text-primary)',
+            textShadow: 'none',
+        };
+    }
+
+    const minDias = 2;
+    const maxDias = 30;
+    const t = Math.min(Math.max((dias - minDias) / (maxDias - minDias), 0), 1);
+
+    // Soft red -> medium red (intentionally subtle for now)
+    const start = { r: 255, g: 188, b: 192 };
+    const end = { r: 255, g: 116, b: 124 };
+    const r = Math.round(start.r + (end.r - start.r) * t);
+    const g = Math.round(start.g + (end.g - start.g) * t);
+    const b = Math.round(start.b + (end.b - start.b) * t);
+    const glow = (0.08 + t * 0.18).toFixed(2);
+    const blur = (2 + t * 4).toFixed(1);
+
+    return {
+        color: `rgb(${r}, ${g}, ${b})`,
+        textShadow: `0 0 ${blur}px rgba(255,77,87,${glow})`,
+    };
 };
 
 /* ── count-up animation hook ──────────────────────────────────── */
@@ -126,10 +223,17 @@ interface CelulaGroup {
     label: string;
     email: string;
     filiais: FilialConfig[];
-    plantIds: number[];
+    routeWebPlantIds: number[];
+    datalakePlantIds: number[];
 }
 
 type FilterMode = 'operacao' | 'celula';
+
+interface ScopedFilialData {
+    routeWebStatuses: RouteWebRoute[];
+    rotasPendentesCount: number;
+    saidasTrend: TrendDay[];
+}
 
 /* ── KPI threshold helper ─────────────────────────────────────── */
 const kpiThreshold = (value: number, kind: 'pct' | 'count'): string => {
@@ -146,31 +250,82 @@ const kpiBarClass = (value: number, kind: 'pct' | 'count'): string => {
     return 'bar-red';
 };
 
-/* ── Route timeline bar color — STATUS-BASED only ── */
-type RouteBarColor = 'gray' | 'blue' | 'yellow' | 'red';
+/* ── Atendimento Saídas % calculation ── */
+const calcAtendSaidas = (saidas: SaidaRotaItem[]): number => {
+    if (saidas.length === 0) return 0;
+    const motivosInternos = ['MAO DE OBRA', 'MÃO DE OBRA', 'MANUTENCAO', 'MANUTENÇÃO', 'LOGISTICA', 'LOGÍSTICA'];
+    const isMotivoInterno = (motivo: string | null): boolean => {
+        if (!motivo) return false;
+        const norm = motivo.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+        return motivosInternos.some(m => norm.includes(m));
+    };
+    const atrasadasQueDescontam = saidas.filter(s => {
+        const st = (s.statusOp || '').toUpperCase();
+        return st.includes('ATRAS') && isMotivoInterno(s.motivoAtraso);
+    }).length;
+    const adiantadas = saidas.filter(s => {
+        const st = (s.statusOp || '').toUpperCase();
+        return st.includes('ADIANT');
+    }).length;
+    const rotasOk = saidas.length - atrasadasQueDescontam - adiantadas;
+    return (rotasOk / saidas.length) * 100;
+};
 
-const getRouteBarColor = (s: SaidaRotaItem): RouteBarColor => {
+/* ── Route timeline bar color — STATUS-BASED only ── */
+type RouteBarColor = 'gray' | 'blue' | 'blue-red' | 'yellow' | 'red';
+
+const isPlannedStatus = (status: string): boolean => {
+    if (!status) return true;
+    return status.includes('PROGRAMAD') || status.includes('PREVIST') || status.includes('PREVISTA');
+};
+
+const getRouteBarColor = (
+    s: SaidaRotaItem,
+    routeStatusMap: Map<string, string>,
+    lateByTolerance: boolean
+): RouteBarColor => {
     const st = (s.statusOp || '').toUpperCase().trim();
 
-    // 1) ATRASADA / ADIANTADA with motivo+obs filled → red
-    if (st.includes('ATRAS') || st.includes('ADIANT')) {
-        const hasMotivo = !!s.motivoAtraso && s.motivoAtraso.trim() !== '';
-        const hasObs = !!s.observacao && s.observacao.trim() !== '';
+    // Check if route is encerrada in route_web_routes
+    const rweKey = `${normalizeOperation(s.operacao)}|${normalizeOperation(s.title)}`;
+    const rweStatus = routeStatusMap.get(rweKey) || '';
+    const isEncerrada = rweStatus.includes('ENCERRADO') || rweStatus.includes('ENCERRADA');
+
+    // Check if route already departed
+    const hasInicio = !!s.horarioInicio && s.horarioInicio.trim() !== '';
+    const hasRefTime = !!s.horarioSaida && s.horarioSaida.trim() !== '';
+
+    // 1) ATRASADA / ADIANTADA
+    if (st.includes('ATRAS') || st.includes('ADIANT') || lateByTolerance) {
+        const hasMotivo = hasMeaningfulText(s.motivoAtraso);
+        const hasObs = hasMeaningfulText(s.observacao);
+
+        // Regra prioritária: sem motivo válido => pendente de verificação (amarelo)
+        if (!hasMotivo) return 'yellow';
+
+        // If encerrada or already departed → blue bar but red text (blue-red)
+        if (isEncerrada || hasInicio) {
+            return 'blue-red';
+        }
+
+        // Not departed yet → original behavior
         if (hasMotivo && hasObs) return 'red';
-        return 'yellow'; // missing motivo or obs → pending verification
+        return 'yellow';
     }
 
     // 2) NO PRAZO → blue (OK)
     if (st.includes('NO PRAZO')) return 'blue';
 
-    // 3) PROGRAMADA / PREVISTA / no status → gray
-    if (!st || st.includes('PROGRAMAD') || st.includes('PREVIST') || st.includes('PREVISTA')) return 'gray';
+    // 3) No reference time (S/ horário) and not departed → yellow (pendente verificação)
+    if (!hasRefTime && !hasInicio) return 'yellow';
 
-    // 4) Already departed (has horarioInicio) but no explicit status → blue
-    const hasInicio = !!s.horarioInicio && s.horarioInicio.trim() !== '';
+    // 4) PROGRAMADA / PREVISTA / no status → gray
+    if (isPlannedStatus(st)) return 'gray';
+
+    // 5) Already departed (has horarioInicio) but no explicit status → blue
     if (hasInicio) return 'blue';
 
-    // 5) Default: gray (prevista / aguardando)
+    // 6) Default: gray (prevista / aguardando)
     return 'gray';
 };
 
@@ -204,9 +359,23 @@ export function Dashboard(): JSX.Element {
     const [rotasPendentesCount, setRotasPendentesCount] = useState(0);
     const [produtoresSemColeta, setProdutoresSemColeta] = useState<ProdutorSemColetaItem[]>([]);
     const [saidasTrend, setSaidasTrend] = useState<TrendDay[]>([]);
+    const [routeWebStatuses, setRouteWebStatuses] = useState<RouteWebRoute[]>([]);
+    const [isViewSwitching, setIsViewSwitching] = useState(false);
 
     const chartAreaRef = useRef<HTMLDivElement>(null);
     const timelineRowsRef = useRef<HTMLDivElement>(null);
+
+    /* ── prefetch refs: load next filial data in background ── */
+    const prefetchRef = useRef<{
+        targetKey: string;
+        promise: Promise<ScopedFilialData>;
+    } | null>(null);
+    const scopedDataCacheRef = useRef<Map<string, ScopedFilialData>>(new Map());
+    const filiaisRef = useRef<FilialConfig[]>([]);
+    const celulasRef = useRef<CelulaGroup[]>([]);
+    const saidasRotasRef = useRef<SaidaRotaItem[]>([]);
+    const switchAnimTimeoutRef = useRef<number | null>(null);
+    const lastVisibleKeyRef = useRef<string | null>(null);
 
     /* ── derived state ── */
     const celulas = useMemo<CelulaGroup[]>(() => {
@@ -225,13 +394,57 @@ export function Dashboard(): JSX.Element {
                 label: `CÉLULA ${idx + 1}`,
                 email,
                 filiais: fils,
-                plantIds: fils.map(f => f.plantId).filter((id): id is number => id != null && id > 0),
+                routeWebPlantIds: fils.map(f => f.plantId).filter((id): id is number => id != null && id > 0),
+                datalakePlantIds: fils.map(f => f.datalakePlantId).filter((id): id is number => id != null && id > 0),
             }));
     }, [filiais]);
 
     const activeFilial = filiais[activeFilialIndex] ?? null;
     const activeCelula = celulas[activeCelulaIndex] ?? null;
     const shouldRotate = filterMode === 'celula' ? celulas.length > 1 : filiais.length > 1;
+
+    useEffect(() => {
+        filiaisRef.current = filiais;
+    }, [filiais]);
+
+    useEffect(() => {
+        celulasRef.current = celulas;
+    }, [celulas]);
+
+    useEffect(() => {
+        saidasRotasRef.current = saidasRotas;
+    }, [saidasRotas]);
+
+    const visibleKey = filterMode === 'celula'
+        ? `celula:${activeCelulaIndex}`
+        : `filial:${activeFilialIndex}`;
+
+    useEffect(() => {
+        if (loading) return;
+        if (lastVisibleKeyRef.current === null) {
+            lastVisibleKeyRef.current = visibleKey;
+            return;
+        }
+        if (lastVisibleKeyRef.current === visibleKey) return;
+
+        lastVisibleKeyRef.current = visibleKey;
+        setIsViewSwitching(true);
+        if (switchAnimTimeoutRef.current !== null) {
+            window.clearTimeout(switchAnimTimeoutRef.current);
+        }
+        switchAnimTimeoutRef.current = window.setTimeout(() => {
+            setIsViewSwitching(false);
+            switchAnimTimeoutRef.current = null;
+        }, VIEW_SWITCH_ANIM_MS);
+    }, [visibleKey, loading]);
+
+    useEffect(() => {
+        return () => {
+            if (switchAnimTimeoutRef.current !== null) {
+                window.clearTimeout(switchAnimTimeoutRef.current);
+            }
+        };
+    }, []);
 
     /* ── data loading ── */
     const loadData = useCallback(async () => {
@@ -256,7 +469,9 @@ export function Dashboard(): JSX.Element {
                 operacao: pc.operacao,
                 nomeExibicao: pc.filial,
                 plantId: pc.plantId ?? undefined,
+                datalakePlantId: pc.datalakePlantId ?? pc.plantId ?? undefined,
                 email: pc.email,
+                tolerancia: pc.tolerancia ?? undefined,
             }));
             fc.sort((a, b) => a.nomeExibicao.localeCompare(b.nomeExibicao, 'pt-BR', { sensitivity: 'base' }));
             setFiliais(fc);
@@ -297,67 +512,285 @@ export function Dashboard(): JSX.Element {
         }
     }, [loading, trendLoaded]);
 
-    /* ── rotation + countdown ── */
-    useEffect(() => {
-        if (!shouldRotate) { setTimeLeft(0); return; }
-        setTimeLeft(ROTATE_INTERVAL_MS / 1000);
-        const cd = window.setInterval(() => setTimeLeft(p => Math.max(p - 1, 0)), 1000);
-        const rt = window.setTimeout(() => {
-            if (filterMode === 'celula') setActiveCelulaIndex(p => (p + 1) % celulas.length);
-            else setActiveFilialIndex(p => (p + 1) % filiais.length);
-        }, ROTATE_INTERVAL_MS);
-        return () => { window.clearInterval(cd); window.clearTimeout(rt); };
-    }, [activeFilialIndex, activeCelulaIndex, filterMode, celulas.length, filiais.length, shouldRotate]);
-
-    /* ── rotas pendentes: refetch when active filial/célula changes ── */
-    useEffect(() => {
-        let cancelled = false;
-        const plantIds = filterMode === 'celula' && activeCelula
-            ? activeCelula.plantIds.filter((id): id is number => id != null && id > 0)
-            : activeFilial && activeFilial.plantId != null && activeFilial.plantId > 0
-                ? [activeFilial.plantId]
-                : filiais.map(f => f.plantId).filter((id): id is number => id != null && id > 0);
-
-        if (plantIds.length > 0) {
-            fetchRotasPendentesCount(plantIds).then(count => {
-                if (!cancelled) setRotasPendentesCount(count);
-            }).catch(err => {
-                console.warn('[DASHBOARD] Rotas pendentes indisponíveis:', err?.message || err);
-            });
-        } else {
-            setRotasPendentesCount(0);
+    const getTargetKey = useCallback((
+        targetFilial: FilialConfig | null,
+        targetCelula: CelulaGroup | null,
+        mode: FilterMode
+    ): string => {
+        if (mode === 'celula') {
+            const ops = (targetCelula?.filiais ?? [])
+                .map(f => normalizeOperation(f.operacao))
+                .sort()
+                .join(',');
+            const routeWebPlants = (targetCelula?.routeWebPlantIds ?? [])
+                .filter((id): id is number => id != null && id > 0)
+                .sort((a, b) => a - b)
+                .join(',');
+            const datalakePlants = (targetCelula?.datalakePlantIds ?? [])
+                .filter((id): id is number => id != null && id > 0)
+                .sort((a, b) => a - b)
+                .join(',');
+            return `celula|ops:${ops}|rwPlants:${routeWebPlants}|dlPlants:${datalakePlants}`;
         }
-        return () => { cancelled = true; };
-    }, [activeFilial, activeCelula, filterMode, filiais]);
 
-    /* ── trend 7 dias: refetch when active filial/célula changes ── */
-    useEffect(() => {
-        let cancelled = false;
-        const operacoes = filterMode === 'celula' && activeCelula
-            ? activeCelula.filiais.map(f => f.operacao)
-            : activeFilial?.operacao
-                ? [activeFilial.operacao]
+        const op = targetFilial?.operacao ? normalizeOperation(targetFilial.operacao) : '';
+        const routeWebPlant = targetFilial && targetFilial.plantId != null && targetFilial.plantId > 0
+            ? String(targetFilial.plantId)
+            : '';
+        const datalakePlant = targetFilial && targetFilial.datalakePlantId != null && targetFilial.datalakePlantId > 0
+            ? String(targetFilial.datalakePlantId)
+            : '';
+        return `operacao|op:${op}|rwPlant:${routeWebPlant}|dlPlant:${datalakePlant}`;
+    }, []);
+
+    const applyScopedFilialData = useCallback((data: ScopedFilialData) => {
+        setRouteWebStatuses(data.routeWebStatuses);
+        setRotasPendentesCount(data.rotasPendentesCount);
+        setSaidasTrend(data.saidasTrend);
+        setTrendLoaded(true);
+    }, []);
+
+    /* ── helper: fetch filial-specific data (route_web_routes, rotas pendentes, trend) ── */
+    const fetchFilialData = useCallback(async (
+        targetFilial: FilialConfig | null,
+        targetCelula: CelulaGroup | null,
+        mode: FilterMode
+    ): Promise<ScopedFilialData> => {
+        // Build operacoes and plant IDs for each target source
+        const operacoes = mode === 'celula' && targetCelula
+            ? targetCelula.filiais.map(f => f.operacao)
+            : targetFilial?.operacao
+                ? [targetFilial.operacao]
                 : [];
 
-        console.log('[TREND] mode:', filterMode, '| operacoes:', operacoes, '| activeFilial:', activeFilial?.operacao ?? 'null');
+        const routeWebPlantIds = mode === 'celula' && targetCelula
+            ? targetCelula.routeWebPlantIds.filter((id): id is number => id != null && id > 0)
+            : targetFilial && targetFilial.plantId != null && targetFilial.plantId > 0
+                ? [targetFilial.plantId]
+                : [];
 
-        if (operacoes.length > 0) {
-            fetchSaidasTrend(operacoes).then(trend => {
-                if (!cancelled) {
-                    console.log('[TREND] result:', trend.length, 'days | values:', trend.map(d => d.value));
-                    setSaidasTrend(trend);
-                    setTrendLoaded(true);
-                }
+        const rotasPendPlantIds = mode === 'celula' && targetCelula
+            ? targetCelula.datalakePlantIds.filter((id): id is number => id != null && id > 0)
+            : targetFilial && targetFilial.datalakePlantId != null && targetFilial.datalakePlantId > 0
+                ? [targetFilial.datalakePlantId]
+                : [];
+
+        // route_web_routes (RWE DB): filter by route_web_routes.plant_id
+        const rwPromise = routeWebPlantIds.length > 0
+            ? fetchRouteWebRoutes(todayISO(), routeWebPlantIds).catch(err => {
+                console.warn('[DASHBOARD] Route web routes indisponíveis:', err?.message || err);
+                return [] as RouteWebRoute[];
+            })
+            : Promise.resolve([] as RouteWebRoute[]);
+
+        // Rotas pendentes (APBD): filter by Rota.plantaId using operacao_config.datalake_plant_id
+        const rotasPendPromise = rotasPendPlantIds.length > 0
+            ? fetchRotasPendentesCount(rotasPendPlantIds).catch(err => {
+                console.warn('[DASHBOARD] Rotas pendentes indisponíveis:', err?.message || err);
+                return 0;
+            })
+            : Promise.resolve(0);
+
+        // trend 7 dias — replace today's value with frontend-calculated atendimento
+        const todayKey = todayISO();
+        const trendPromise = operacoes.length > 0
+            ? fetchSaidasTrend(operacoes).then(trend => {
+                // Build saidasFilial equivalent for the target to calc today's value
+                const ops = mode === 'celula' && targetCelula
+                    ? new Set(targetCelula.filiais.map(f => normalizeOperation(f.operacao)))
+                    : targetFilial?.operacao
+                        ? new Set([normalizeOperation(targetFilial.operacao)])
+                        : new Set<string>();
+                const targetSaidas = saidasRotasRef.current.filter(s => ops.has(normalizeOperation(s.operacao)));
+                const todayValue = targetSaidas.length > 0 ? Math.round(calcAtendSaidas(targetSaidas) * 10) / 10 : null;
+
+                // Replace today's value in trend with frontend-calculated value
+                return trend.map((d: TrendDay) =>
+                    d.date === todayKey ? { ...d, value: todayValue ?? d.value } : d
+                );
             }).catch(err => {
                 console.warn('[DASHBOARD] Trend indisponível:', err?.message || err);
-                if (!cancelled) setTrendLoaded(true);
-            });
-        } else {
-            setSaidasTrend([]);
-            if (!loading) setTrendLoaded(true);
+                return [] as TrendDay[];
+            })
+            : Promise.resolve([] as TrendDay[]);
+
+        const [routeWebStatusesData, rotasPendentesData, saidasTrendData] = await Promise.all([
+            rwPromise,
+            rotasPendPromise,
+            trendPromise,
+        ]);
+
+        return {
+            routeWebStatuses: routeWebStatusesData,
+            rotasPendentesCount: rotasPendentesData,
+            saidasTrend: saidasTrendData,
+        };
+    }, []);
+
+    /* ── load data for current active filial (initial + manual refresh) ── */
+    useEffect(() => {
+        if (loading || filiais.length === 0) return;
+        const currentKey = getTargetKey(activeFilial, activeCelula, filterMode);
+        const cached = scopedDataCacheRef.current.get(currentKey);
+        if (cached) {
+            applyScopedFilialData(cached);
+            return;
         }
-        return () => { cancelled = true; };
-    }, [activeFilial, activeCelula, filterMode, loading]);
+
+        let canceled = false;
+        fetchFilialData(activeFilial, activeCelula, filterMode)
+            .then(data => {
+                if (canceled) return;
+                scopedDataCacheRef.current.set(currentKey, data);
+                applyScopedFilialData(data);
+            })
+            .catch(err => {
+                if (canceled) return;
+                console.warn('[DASHBOARD] Falha ao carregar dados da visualização ativa:', err?.message || err);
+                setTrendLoaded(true);
+            });
+
+        return () => {
+            canceled = true;
+        };
+    }, [
+        activeFilial,
+        activeCelula,
+        filterMode,
+        filiais.length,
+        loading,
+        fetchFilialData,
+        getTargetKey,
+        applyScopedFilialData,
+    ]);
+
+    /* ── rotation with prefetch: load next filial data before switching ── */
+    useEffect(() => {
+        if (!shouldRotate) { setTimeLeft(0); return; }
+
+        const total = filterMode === 'celula' ? celulas.length : filiais.length;
+        if (total <= 1) return;
+
+        const currentIndex = filterMode === 'celula' ? activeCelulaIndex : activeFilialIndex;
+        const nextIndex = (currentIndex + 1) % total;
+
+        // Start countdown
+        setTimeLeft(ROTATE_INTERVAL_MS / 1000);
+        const cd = window.setInterval(() => setTimeLeft(p => Math.max(p - 1, 0)), 1000);
+
+        // Prefetch next data when 20 seconds are left in the timer
+        const prefetchDelay = Math.max(0, ROTATE_INTERVAL_MS - PREFETCH_LEAD_MS);
+        const pfTimeout = window.setTimeout(() => {
+            const nextFilial = filterMode === 'celula' ? null : filiaisRef.current[nextIndex] ?? null;
+            const nextCelula = filterMode === 'celula' ? celulasRef.current[nextIndex] ?? null : null;
+            const nextKey = getTargetKey(nextFilial, nextCelula, filterMode);
+            const cached = scopedDataCacheRef.current.get(nextKey);
+
+            if (cached) {
+                prefetchRef.current = { targetKey: nextKey, promise: Promise.resolve(cached) };
+                return;
+            }
+
+            const promise = fetchFilialData(nextFilial, nextCelula, filterMode).then(data => {
+                scopedDataCacheRef.current.set(nextKey, data);
+                return data;
+            });
+            prefetchRef.current = { targetKey: nextKey, promise };
+        }, prefetchDelay);
+
+        // Rotate after full interval — data is already prefetched
+        const rt = window.setTimeout(() => {
+            const nextFilial = filterMode === 'celula' ? null : filiaisRef.current[nextIndex] ?? null;
+            const nextCelula = filterMode === 'celula' ? celulasRef.current[nextIndex] ?? null : null;
+            const nextKey = getTargetKey(nextFilial, nextCelula, filterMode);
+            const prefetched = prefetchRef.current && prefetchRef.current.targetKey === nextKey
+                ? prefetchRef.current.promise
+                : fetchFilialData(nextFilial, nextCelula, filterMode);
+
+            prefetched
+                .then(data => {
+                    scopedDataCacheRef.current.set(nextKey, data);
+                    if (filterMode === 'celula') setActiveCelulaIndex(nextIndex);
+                    else setActiveFilialIndex(nextIndex);
+                    applyScopedFilialData(data);
+                })
+                .catch(err => {
+                    console.warn('[DASHBOARD] Prefetch da próxima visualização falhou:', err?.message || err);
+                    if (filterMode === 'celula') setActiveCelulaIndex(nextIndex);
+                    else setActiveFilialIndex(nextIndex);
+                    setTrendLoaded(true);
+                })
+                .finally(() => {
+                    prefetchRef.current = null;
+                });
+        }, ROTATE_INTERVAL_MS);
+
+        return () => { window.clearInterval(cd); window.clearTimeout(pfTimeout); window.clearTimeout(rt); };
+    }, [
+        activeFilialIndex,
+        activeCelulaIndex,
+        filterMode,
+        celulas.length,
+        filiais.length,
+        shouldRotate,
+        fetchFilialData,
+        getTargetKey,
+        applyScopedFilialData,
+    ]);
+
+    /* ── datalake plant id lookup: operacao → datalake_plant_id ── */
+    const datalakePlantIdMap = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const r of routeWebStatuses) {
+            const key = normalizeOperation(r.operacao);
+            if (r.datalake_plant_id != null && !map.has(key)) {
+                map.set(key, r.datalake_plant_id);
+            }
+        }
+        return map;
+    }, [routeWebStatuses]);
+
+    /* ── route status lookup: operacao+rota → encerrada ── */
+    const routeStatusMap = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const r of routeWebStatuses) {
+            const key = `${normalizeOperation(r.operacao)}|${normalizeOperation(r.roadmap_code)}`;
+            map.set(key, (r.status || '').toUpperCase());
+        }
+        return map;
+    }, [routeWebStatuses]);
+
+    const toleranciaByOperacaoMin = useMemo(() => {
+        const map = new Map<string, number>();
+        for (const f of filiais) {
+            const opKey = normalizeOperation(f.operacao);
+            if (!opKey) continue;
+            const tol = parseToleranceToMinutes(f.tolerancia);
+            if (tol === null) continue;
+            const prev = map.get(opKey);
+            map.set(opKey, prev == null ? tol : Math.max(prev, tol));
+        }
+        return map;
+    }, [filiais]);
+
+    const isLateByTolerance = useCallback((s: SaidaRotaItem): boolean => {
+        const st = (s.statusOp || '').toUpperCase().trim();
+
+        if (!isPlannedStatus(st)) return false;
+        if (st.includes('ATRAS') || st.includes('ADIANT') || st.includes('NO PRAZO')) return false;
+
+        const hasInicio = !!s.horarioInicio && s.horarioInicio.trim() !== '';
+        if (hasInicio) return false;
+
+        const plannedMin = parseClockToMinutes(s.horarioSaida);
+        if (plannedMin === null) return false;
+
+        const opKey = normalizeOperation(s.operacao);
+        const toleranceMin = Math.max(0, toleranciaByOperacaoMin.get(opKey) ?? 0);
+        const nowMin = Math.floor(nowHour * 60);
+
+        return nowMin > plannedMin + toleranceMin;
+    }, [nowHour, toleranciaByOperacaoMin]);
 
     /* ── computed data ── */
     const saidasFilial = useMemo(() => {
@@ -371,6 +804,42 @@ export function Dashboard(): JSX.Element {
         return saidasRotas.filter(s => normalizeOperation(s.operacao) === op);
     }, [saidasRotas, activeFilial, activeCelula, filterMode]);
 
+    /* ── Delay Verificação ── */
+    const delayStats = useMemo(() => {
+        const parseDelayMinutes = (v: string | null): number | null => {
+            if (!v) return null;
+            const raw = String(v).trim();
+            // Try "HH:MM:SS" or "HH:MM"
+            const m = /^(\d+):(\d{2})(?::(\d{2}))?$/.exec(raw);
+            if (m) {
+                const h = Number(m[1]), mi = Number(m[2]);
+                if (!isNaN(h) && !isNaN(mi)) return h * 60 + mi;
+            }
+            // Try numeric minutes
+            const num = Number(raw);
+            if (!isNaN(num) && raw !== '') return num;
+            return null;
+        };
+
+        const delays = saidasFilial
+            .map(s => parseDelayMinutes(s.tempoResposta))
+            .filter((d): d is number => d !== null);
+
+        if (delays.length === 0) return { count: 0, avgMinutes: 0 };
+
+        const countOver1h = delays.filter(d => d > 60).length;
+        const avgMinutes = delays.reduce((a, b) => a + b, 0) / delays.length;
+        return { count: countOver1h, avgMinutes };
+    }, [saidasFilial]);
+
+    const formatDelay = (minutes: number): string => {
+        const totalSeconds = Math.max(0, Math.round(minutes * 60));
+        const h = Math.floor(totalSeconds / 3600);
+        const m = Math.floor((totalSeconds % 3600) / 60);
+        const s = totalSeconds % 60;
+        return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+    };
+
     /* ── próxima rota prevista (modo célula) ── */
     const proximaRota = useMemo<{ title: string; deltaMin: number; label: string } | null>(() => {
         if (filterMode !== 'celula') return null;
@@ -378,6 +847,7 @@ export function Dashboard(): JSX.Element {
 
         const previstas = saidasFilial.filter(s => {
             const stUpper = (s.statusOp || '').toUpperCase();
+            if (isLateByTolerance(s)) return false;
             if (stUpper.includes('ATRAS') || stUpper.includes('ADIANT') || stUpper.includes('NO PRAZO')) return false;
             if (!s.horarioSaida) return false;
             const saidaMin = parseClockToMinutes(s.horarioSaida);
@@ -397,20 +867,20 @@ export function Dashboard(): JSX.Element {
         const saidaMin = parseClockToMinutes(next.horarioSaida)!;
         const deltaMin = saidaMin - nowMin;
         return { title: next.title, deltaMin, label: formatTimeDelta(deltaMin) };
-    }, [saidasFilial, filterMode, nowHour]);
+    }, [saidasFilial, filterMode, nowHour, isLateByTolerance]);
 
     const saidasCelula = useMemo(() => {
         if (filterMode !== 'celula') return saidasFilial;
         return [...saidasFilial].sort((a, b) => {
-            const aPrevista = !(a.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/);
-            const bPrevista = !(b.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/);
+            const aPrevista = !(a.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/) && !isLateByTolerance(a);
+            const bPrevista = !(b.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/) && !isLateByTolerance(b);
             if (aPrevista && !bPrevista) return -1;
             if (!aPrevista && bPrevista) return 1;
             const aMin = parseClockToMinutes(a.horarioSaida) ?? 9999;
             const bMin = parseClockToMinutes(b.horarioSaida) ?? 9999;
             return aMin - bMin;
         });
-    }, [saidasFilial, filterMode]);
+    }, [saidasFilial, filterMode, isLateByTolerance]);
 
     const indicadores = useMemo<KPIData[]>(() => {
         if (saidasFilial.length === 0 && (!activeFilial || !activeCelula)) return [
@@ -419,25 +889,7 @@ export function Dashboard(): JSX.Element {
         ];
 
         const totalSaidas = saidasFilial.length;
-
-        // Só desconta do indicador se motivo for interno: Mão de obra, Manutenção ou Logística
-        const motivosInternos = ['MAO DE OBRA', 'MÃO DE OBRA', 'MANUTENCAO', 'MANUTENÇÃO', 'LOGISTICA', 'LOGÍSTICA'];
-        const isMotivoInterno = (motivo: string | null): boolean => {
-            if (!motivo) return false;
-            const norm = motivo.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-            return motivosInternos.some(m => norm.includes(m));
-        };
-
-        const atrasadasQueDescontam = saidasFilial.filter(s => {
-            const st = (s.statusOp || '').toUpperCase();
-            return st.includes('ATRAS') && isMotivoInterno(s.motivoAtraso);
-        }).length;
-        const adiantadas = saidasFilial.filter(s => {
-            const st = (s.statusOp || '').toUpperCase();
-            return st.includes('ADIANT');
-        }).length;
-        const rotasOk = totalSaidas - atrasadasQueDescontam - adiantadas;
-        const atendSaidas = totalSaidas > 0 ? (rotasOk / totalSaidas) * 100 : 0;
+        const atendSaidas = calcAtendSaidas(saidasFilial);
 
         const opsSet = filterMode === 'celula' && activeCelula
             ? new Set(activeCelula.filiais.map(f => normalizeOperation(f.operacao)))
@@ -529,24 +981,26 @@ export function Dashboard(): JSX.Element {
         return saidasFilial
             .filter(s => {
                 const st = (s.statusOp || '').toUpperCase();
-                const isAtrasada = st.includes('ATRAS');
+                const isAtrasada = st.includes('ATRAS') || isLateByTolerance(s);
                 const isAdiantada = st.includes('ADIANT');
                 if (!isAtrasada && !isAdiantada) return false;
 
-                const missingMotivo = !s.motivoAtraso || s.motivoAtraso.trim() === '';
-                const missingObs = !s.observacao || s.observacao.trim() === '';
+                const missingMotivo = !hasMeaningfulText(s.motivoAtraso);
+                const missingObs = !hasMeaningfulText(s.observacao);
                 const noInicio = !s.horarioInicio || s.horarioInicio.trim() === '';
 
                 return missingMotivo || missingObs;
             })
             .map(s => {
-                const missingMotivo = !s.motivoAtraso || s.motivoAtraso.trim() === '';
-                const missingObs = !s.observacao || s.observacao.trim() === '';
+                const st = (s.statusOp || '').toUpperCase();
+                const forcedLate = isLateByTolerance(s);
+                const missingMotivo = !hasMeaningfulText(s.motivoAtraso);
+                const missingObs = !hasMeaningfulText(s.observacao);
 
                 return {
                     id: s.id,
                     title: s.title,
-                    statusOp: s.statusOp || '--',
+                    statusOp: forcedLate && !st.includes('ATRAS') ? 'ATRASADA' : (s.statusOp || '--'),
                     horarioSaida: s.horarioSaida,
                     motivoAtraso: s.motivoAtraso,
                     observacao: s.observacao,
@@ -554,7 +1008,7 @@ export function Dashboard(): JSX.Element {
                     severity: 'red' as const,
                 };
             });
-    }, [saidasFilial]);
+    }, [saidasFilial, isLateByTolerance]);
 
     const isD1 = useMemo(() => {
         return false;
@@ -589,17 +1043,18 @@ export function Dashboard(): JSX.Element {
 
         const relevant = saidasFilial.filter(s => {
             const st = (s.statusOp || '').toUpperCase();
-            if (st.includes('ATRAS') || st.includes('ADIANT')) return true;
+            if (st.includes('ATRAS') || st.includes('ADIANT') || isLateByTolerance(s)) return true;
             if (st.includes('PENDENT') || st.includes('VERIF')) return true;
             // has meaningful observation
-            if (s.observacao && s.observacao.trim() !== '' && s.observacao.trim().toUpperCase() !== 'N/A') return true;
+            if (hasMeaningfulText(s.observacao)) return true;
             return false;
         });
 
         return relevant
             .map(s => {
                 const st = (s.statusOp || '').toUpperCase();
-                const isAtrasada = st.includes('ATRAS');
+                const forcedLate = isLateByTolerance(s);
+                const isAtrasada = st.includes('ATRAS') || forcedLate;
                 const isAdiantada = st.includes('ADIANT');
                 const saidaMin = parseClockToMinutes(s.horarioSaida);
                 const inicioMin = parseClockToMinutes(s.horarioInicio);
@@ -619,12 +1074,14 @@ export function Dashboard(): JSX.Element {
                 const absMin = Math.abs(deltaMin);
                 const h = Math.floor(absMin / 60);
                 const m = absMin % 60;
-                const deltaStr = `${sign} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+                const deltaStr = `${sign} ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}h`;
 
-                const obs = s.observacao?.trim() || s.motivoAtraso?.trim() || 'Sem detalhes';
+                const obs = (hasMeaningfulText(s.observacao) ? s.observacao?.trim() : '')
+                    || (hasMeaningfulText(s.motivoAtraso) ? s.motivoAtraso?.trim() : '')
+                    || 'Sem detalhes';
                 const operacao = s.operacao?.trim();
 
-                let text = `ROTA ${s.title}: ${deltaStr} | ${obs}`;
+                let text = `ROTA ${s.title}: ${deltaStr} - ${obs}`;
                 if (filterMode === 'celula' && operacao) {
                     text += ` — ${operacao}`;
                 }
@@ -637,7 +1094,7 @@ export function Dashboard(): JSX.Element {
                 if (!a.isAtrasada && b.isAtrasada) return 1;
                 return b.deltaMin - a.deltaMin;
             });
-    }, [saidasFilial, filterMode, nowHour]);
+    }, [saidasFilial, filterMode, nowHour, isLateByTolerance]);
 
     /* ── auto-scroll ── */
     /* ── Timeline auto-scroll: keeps focus on routes near current time ── */
@@ -707,7 +1164,7 @@ export function Dashboard(): JSX.Element {
        RENDER
        ================================================================ */
     return (
-        <div className="dash-shell">
+        <div className={`dash-shell ${isViewSwitching ? 'dash-shell-switching' : ''}`}>
             {/* ── TOP BAR: Logo/Title (left) + Cards (right) ── */}
             <header className="dash-top-bar">
                 <div className="dash-top-left">
@@ -737,7 +1194,7 @@ export function Dashboard(): JSX.Element {
                                         </span>
                                     </div>
                                     {target !== null && (
-                                        <span className="dash-kpi-meta" style={{ color: metTarget ? 'var(--green)' : 'var(--red)' }}>
+                                        <span className={`dash-kpi-meta ${metTarget ? 'status-ok' : 'text-alert'}`}>
                                             Meta {target % 1 === 0 ? target : target.toFixed(2)}%
                                         </span>
                                     )}
@@ -774,13 +1231,39 @@ export function Dashboard(): JSX.Element {
                             />
                         </div>
                     </div>
+
+                    {/* Delay Verificação */}
+                    <div className={`dash-kpi-card ${delayStats.count > 0 ? 'kpi-bad' : 'kpi-good'}`}>
+                        <div className="dash-kpi-top">
+                            <span className="dash-kpi-value">
+                                <AnimatedNumber value={delayStats.count} />
+                            </span>
+                            <span className="dash-kpi-meta" style={{ color: 'var(--text-primary)', fontSize: '11px' }}>
+                                Média:{' '}
+                                {delayStats.avgMinutes >= 60 ? (
+                                    <span className="text-alert">
+                                        {formatDelay(delayStats.avgMinutes)}
+                                    </span>
+                                ) : (
+                                    formatDelay(delayStats.avgMinutes)
+                                )}
+                            </span>
+                        </div>
+                        <span className="dash-kpi-label">Delay Verificação</span>
+                        <div className="dash-kpi-bar">
+                            <div
+                                className={`dash-kpi-bar-fill ${delayStats.count > 0 ? 'bar-red' : 'bar-green'}`}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+                    </div>
                 </div>
             </header>
 
             {/* ── OPERATIONAL TICKER ── */}
             <div className="dash-ticker">
                 <div className="dash-ticker-track">
-                    <div className="dash-ticker-content">
+                    <div className="dash-ticker-content" style={{ animationDuration: `${Math.max(tickerItems.length * 12, 45)}s` }}>
                         {tickerItems.length > 0 ? (
                             <>
                                 {tickerItems.map(item => (
@@ -809,25 +1292,25 @@ export function Dashboard(): JSX.Element {
             <main className="dash-main">
                 {/* LEFT — Timeline Chart (full height) */}
                 <section className="dash-panel">
-                    <div className="dash-panel-head">
-                        <span className="dash-panel-title">Atrasos no Dia</span>
-                        <span className="dash-panel-subtitle">
-                            <span style={{ display: 'inline-flex', gap: 10, alignItems: 'center', fontSize: 10 }}>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                    <div className="dash-panel-head dash-panel-head-timeline">
+                        <span className="dash-panel-title dash-panel-title-timeline">Atrasos no Dia</span>
+                        <span className="dash-panel-subtitle dash-panel-subtitle-timeline">
+                            <span className="dash-timeline-legend">
+                                <span className="dash-timeline-legend-item">
                                     <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--route-gray)', display: 'inline-block' }}></span>
                                     Prevista
                                 </span>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <span className="dash-timeline-legend-item">
                                     <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--route-blue)', display: 'inline-block' }}></span>
-                                    OK
+                                    OK/ SAÍDA REGISTRADA
                                 </span>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <span className="dash-timeline-legend-item">
                                     <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--route-yellow)', display: 'inline-block' }}></span>
-                                    Pend. Verif.
+                                    Pendente de verificação
                                 </span>
-                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                                <span className="dash-timeline-legend-item">
                                     <span style={{ width: 8, height: 8, borderRadius: 2, background: 'var(--route-red)', display: 'inline-block' }}></span>
-                                    Atrasada/Adiant.
+                                    ATRASO SEM SAÍDA REGISTRADA
                                 </span>
                             </span>
                         </span>
@@ -861,17 +1344,19 @@ export function Dashboard(): JSX.Element {
                                     const leftPct = refHour !== null ? toPercent(refHour) : 0;
                                     const rawWidth = toPercent(BAR_WIDTH_HOURS);
                                     const widthPct = Math.min(rawWidth, 100 - leftPct);
-                                    const color = getRouteBarColor(s);
+                                    const lateByTolerance = isLateByTolerance(s);
+                                    const color = getRouteBarColor(s, routeStatusMap, lateByTolerance);
                                     const hasNoRefTime = refMin === null;
+                                    const showMotivoInline = (color === 'blue-red' || color === 'red') && hasMeaningfulText(s.motivoAtraso);
                                     const barText = hasNoRefTime
                                         ? `${s.title} — S/ horário`
-                                        : color === 'red' && s.motivoAtraso
+                                        : showMotivoInline
                                         ? `${s.title} — ${s.motivoAtraso}`
                                         : s.title;
                                     return (
                                         <div key={s.id} className="timeline-row">
                                             <div
-                                                className={`timeline-bar timeline-bar-${color}`}
+                                                className={`timeline-bar timeline-bar-${color === 'blue-red' ? 'blue' : color}`}
                                                 style={{
                                                     left: `${leftPct}%`,
                                                     width: `${widthPct}%`,
@@ -881,7 +1366,9 @@ export function Dashboard(): JSX.Element {
                                                 }}
                                                 title={`${s.title} | ${s.horarioSaida || '--'} | ${s.statusOp || '--'}${s.motivoAtraso ? ' | ' + s.motivoAtraso : ''}`}
                                             >
-                                                {widthPct < 5 ? s.title.substring(0, 5) + '…' : barText}
+                                                {widthPct < 5 ? s.title.substring(0, 5) + '…' : showMotivoInline ? (
+                                                    <>{s.title}{' \u2014 '}{s.motivoAtraso}</>
+                                                ) : barText}
                                             </div>
                                         </div>
                                     );
@@ -920,33 +1407,28 @@ export function Dashboard(): JSX.Element {
                             <div className="dash-trend-kpi-group">
                                 <div className="dash-trend-kpi-info">
                                     <span className="dash-trend-kpi-label">Evolução 7 Dias — Atendimento Saídas</span>
-                                    <span className="dash-trend-kpi-sub">
-                                        <span className="sub-num">{qntRotasTotal}</span> registradas
-                                        {filterMode === 'celula' && (
-                                            <>
-                                                <span className="sub-dot">·</span>
-                                                <span className="sub-num">{saidasCelula.filter(s => !(s.statusOp || '').toUpperCase().match(/ATRAS|ADIANT|NO PRAZO/)).length}</span> previstas
-                                                <span className="sub-dot">·</span>
-                                                <span className="sub-alert">{saidasCelula.filter(s => (s.statusOp || '').toUpperCase().includes('ATRAS')).length}</span> atrasadas
-                                            </>
-                                        )}
-                                    </span>
                                 </div>
                             </div>
                             {saidasTrend.length >= 2 && (() => {
-                                const yesterdayIdx = saidasTrend.length - 2;
-                                const todayIdx = saidasTrend.length - 1;
-                                const yVal = saidasTrend[yesterdayIdx]?.value;
-                                const tVal = saidasTrend[todayIdx]?.value;
-                                if (yVal == null || tVal == null) return null;
-                                const diff = tVal - yVal;
-                                const isUp = diff >= 0;
+                                const validVals = saidasTrend.filter(d => d.value !== null);
+                                if (validVals.length < 2) return null;
+                                // Linear regression → trend variation %
+                                const n = validVals.length;
+                                const sumX = (n * (n - 1)) / 2;
+                                const sumX2 = (n * (n - 1) * (2 * n - 1)) / 6;
+                                const sumY = validVals.reduce((s, d) => s + d.value!, 0);
+                                const sumXY = validVals.reduce((s, d, i) => s + i * d.value!, 0);
+                                const slope = (n * sumXY - sumX * sumY) / (n * sumX2 - sumX * sumX);
+                                // Extrapolate slope over 7 days relative to average
+                                const avg = sumY / n;
+                                const variation = avg !== 0 ? (slope * 6 / avg) * 100 : 0;
+                                const isUp = variation >= 0;
                                 return (
                                     <div className={`dash-trend-badge ${isUp ? 'dash-trend-badge-up' : 'dash-trend-badge-down'}`}>
                                         <svg width="10" height="10" viewBox="0 0 10 10" fill="none">
                                             <path d={isUp ? 'M5 2L8.5 7H1.5L5 2Z' : 'M5 8L1.5 3H8.5L5 8Z'} fill="currentColor"/>
                                         </svg>
-                                        <span>{isUp ? '+' : ''}{diff.toFixed(1)}% vs ontem</span>
+                                        <span>{isUp ? '+' : ''}{variation.toFixed(1)}%</span>
                                     </div>
                                 );
                             })()}
@@ -993,6 +1475,16 @@ export function Dashboard(): JSX.Element {
                                 }
                             }
 
+                            const lastPt = pts[pts.length - 1];
+                            const lastVal = lastPt?.day.value ?? 0;
+                            const firstVal = pts[0]?.day.value ?? 0;
+                            const meetsTarget = lastVal >= 95;
+                            const isImproving = pts.length >= 2 && lastVal >= firstVal;
+                            const isBad = !isImproving;
+                            const accentColor = isBad ? '#FF4D57' : '#19E3D2';
+                            const accentColorMid = isBad ? '#E53935' : '#0E9AA0';
+                            const accentColorDark = isBad ? '#B71C1C' : '#0E9AA0';
+
                             // Gradient area — close to bottom
                             const areaPath = pts.length >= 2
                                 ? `${smoothPath} L${pts[pts.length - 1].x},${H} L${pts[0].x},${H} Z`
@@ -1001,13 +1493,6 @@ export function Dashboard(): JSX.Element {
                             // Meta line at 95%
                             const meta95y = PAD_Y + (1 - (95 - minV) / range) * (H - PAD_Y * 2);
                             const showMeta = meta95y >= PAD_Y && meta95y <= H - PAD_Y;
-
-                            const lastPt = pts[pts.length - 1];
-                            const lastVal = lastPt?.day.value ?? 0;
-                            const meetsTarget = lastVal >= 95;
-                            const isImproving = pts.length >= 2 && (lastPt?.day.value ?? 0) >= (pts[0]?.day.value ?? 0);
-                            const accentColor = meetsTarget ? '#19E3D2' : isImproving ? '#19E3D2' : '#EF4444';
-                            const accentGlow = meetsTarget ? 'rgba(25,227,210,0.25)' : isImproving ? 'rgba(25,227,210,0.25)' : 'rgba(239,68,68,0.2)';
 
                             // Grid lines: 4 horizontal, subtle
                             const gridLines = [];
@@ -1023,9 +1508,9 @@ export function Dashboard(): JSX.Element {
                                         <defs>
                                             {/* Line gradient */}
                                             <linearGradient id="lineGrad" x1="0" y1="0" x2="1" y2="0">
-                                                <stop offset="0%" stopColor="#0E9AA0" stopOpacity="0.5"/>
-                                                <stop offset="40%" stopColor="#19E3D2" stopOpacity="0.9"/>
-                                                <stop offset="100%" stopColor="#2EF2E0"/>
+                                                <stop offset="0%" stopColor={accentColorDark} stopOpacity="0.5"/>
+                                                <stop offset="40%" stopColor={accentColorMid} stopOpacity="0.9"/>
+                                                <stop offset="100%" stopColor={accentColor}/>
                                             </linearGradient>
                                             {/* Area gradient */}
                                             <linearGradient id="areaGrad" x1="0" y1="0" x2="0" y2="1">
@@ -1068,11 +1553,11 @@ export function Dashboard(): JSX.Element {
                                             <>
                                                 <line x1={PAD_X} y1={meta95y} x2={W - PAD_X} y2={meta95y}
                                                     stroke="rgba(0,212,255,0.08)" strokeWidth="0.3" strokeDasharray="1.2 1.8"/>
-                                                <text x={W - PAD_X - 0.5} y={meta95y - 0.8}
+                                                <text x={PAD_X + 0.5} y={meta95y - 0.8}
                                                     fill="rgba(0,212,255,0.2)" fontSize="2" fontWeight="500"
-                                                    textAnchor="end" fontFamily="Inter, system-ui, sans-serif"
+                                                    textAnchor="start" fontFamily="Inter, system-ui, sans-serif"
                                                     letterSpacing="0.3">
-                                                    Meta 95%
+                                                    95%
                                                 </text>
                                             </>
                                         )}
@@ -1128,7 +1613,7 @@ export function Dashboard(): JSX.Element {
                                                     {!isLast && (
                                                         <circle cx={p.x} cy={p.y}
                                                             r={isTodayPt ? 0.8 : 0.5}
-                                                            fill={isTodayPt ? '#19E3D2' : 'rgba(255,255,255,0.1)'}
+                                                            fill={isTodayPt ? accentColor : 'rgba(255,255,255,0.1)'}
                                                             fillOpacity={isTodayPt ? 0.7 : 0.6}
                                                         />
                                                     )}
@@ -1186,8 +1671,8 @@ export function Dashboard(): JSX.Element {
                                             <td className={`col-status ${p.severity === 'red' ? 'status-atrasado' : 'status-andamento'}`}>{p.statusOp}</td>
                                             <td>{p.horarioSaida || '--'}</td>
                                             <td>{p.horarioInicio || '--'}</td>
-                                            <td>{p.motivoAtraso || <span style={{ color: 'var(--red)' }}>Pendente</span>}</td>
-                                            <td>{p.observacao || <span style={{ color: 'var(--red)' }}>Pendente</span>}</td>
+                                            <td>{p.motivoAtraso || <span className="text-alert">Pendente</span>}</td>
+                                            <td>{p.observacao || <span className="text-alert">Pendente</span>}</td>
                                         </tr>
                                     )) : (
                                         <tr>
@@ -1212,11 +1697,10 @@ export function Dashboard(): JSX.Element {
                     </div>
                     <div className="dash-chart-area" ref={chartAreaRef}>
                         {produtoresChart.length > 0 ? (() => {
-                            const maxDias = Math.max(...produtoresChart.map(p => p.dias_sem_coleta));
-                            return produtoresChart.map((item, idx) => (
+                            return produtoresChart.map((item) => (
                                 <div key={item.codigo} className="dash-bar-row">
                                     <span className="dash-bar-label" title={`${item.produtor} — ${item.operacao}`}>{item.produtor} <span style={{ color: 'var(--text-muted)', fontSize: '0.8em' }}>- {item.operacao}</span></span>
-                                    <span className="dash-bar-count">{item.dias_sem_coleta} dias</span>
+                                    <span className="dash-bar-count" style={getSemColetaDaysStyle(item.dias_sem_coleta)}>{item.dias_sem_coleta} dias</span>
                                 </div>
                             ));
                         })() : (

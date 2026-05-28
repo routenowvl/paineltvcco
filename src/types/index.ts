@@ -25,6 +25,7 @@ export interface FilialConfig {
   operacao: string;
   nomeExibicao: string;
   plantId?: number;
+  datalakePlantId?: number;
   email?: string | null;
   tolerancia?: string | null;
   celulaIndex?: number;
